@@ -52,6 +52,22 @@ if [ -z "$REPO" ]; then
   exit 1
 fi
 
+# Resolve Packagist shorthand (vendor/package) to actual repository URL
+if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+  echo_info "Resolving Packagist package: $REPO..."
+  PACKAGIST_JSON=$(curl -sf "https://packagist.org/packages/${REPO}.json" 2>/dev/null || true)
+  if [ -z "$PACKAGIST_JSON" ]; then
+    echo_error "Could not resolve '$REPO' via Packagist. Is it a valid package name?"
+    exit 1
+  fi
+  REPO=$(echo "$PACKAGIST_JSON" | grep -Po '"repository"\s*:\s*"\K[^"]+' | head -n1 || true)
+  if [ -z "$REPO" ]; then
+    echo_error "Could not find repository URL for package in Packagist response."
+    exit 1
+  fi
+  echo_info "Resolved to: $REPO"
+fi
+
 TMP_DIR=$(mktemp -d)
 
 echo_info "Cloning repository..."
