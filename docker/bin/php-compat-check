@@ -2,6 +2,12 @@
 
 set -e
 
+# Helper functions
+echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
+echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
+echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
+echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
+
 # -----------------------
 # CONFIG
 # -----------------------
@@ -48,7 +54,7 @@ fi
 
 TMP_DIR=$(mktemp -d)
 
-echo "📥 Cloning repository..."
+echo_info "Cloning repository..."
 git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1
 cd "$TMP_DIR"
 
@@ -66,17 +72,17 @@ resolve_php_version() {
   runtime_php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
 
   echo ""
-  echo "⚠ PHP version not provided."
+  echo_warning "PHP version not provided."
   echo ""
 
-  [ -n "$composer_php" ] && echo "📦 composer.json: $composer_php"
-  [ -z "$composer_php" ] && echo "📦 composer.json: (not found)"
+  [ -n "$composer_php" ] && echo "composer.json: $composer_php"
+  [ -z "$composer_php" ] && echo "composer.json: (not found)"
 
-  [ -n "$runtime_php" ] && echo "🐘 runtime PHP: $runtime_php"
-  [ -z "$runtime_php" ] && echo "🐘 runtime PHP: (not available)"
+  [ -n "$runtime_php" ] && echo "runtime PHP: $runtime_php"
+  [ -z "$runtime_php" ] && echo "runtime PHP: (not available)"
 
   echo ""
-  echo "👉 Please provide: <php-version>"
+  echo "Please provide: <php-version>"
   echo ""
 
   exit 1
@@ -119,7 +125,7 @@ run_check() {
   local target="${version}-"
 
   echo ""
-  echo "🔎 Testing PHP $version..."
+  echo_info "Testing PHP $version..."
 
   if [ "$WITH_DEPS" -eq 1 ]; then
     rm -rf vendor composer.lock
@@ -131,7 +137,7 @@ run_check() {
       --no-progress \
       --prefer-dist \
       --no-scripts >/dev/null 2>&1; then
-      echo "❌ Composer failed"
+      echo_error "Composer failed"
       return 1
     fi
 
@@ -144,10 +150,10 @@ run_check() {
     --standard=PHPCompatibility \
     --extensions=php \
     --runtime-set testVersion "$target" >/dev/null; then
-    echo "✅ Compatible"
+    echo_success "Compatible"
     return 0
   else
-    echo "❌ Not compatible"
+    echo_error "Not compatible"
     return 1
   fi
 }
@@ -161,10 +167,10 @@ if [ "$MIN_MODE" -eq 0 ]; then
     resolve_php_version
   fi
 
-  echo "📌 Target PHP: $PHP_VERSION"
+  echo_info "Target PHP: $PHP_VERSION"
 
   if [ "$WITH_DEPS" -eq 1 ]; then
-    echo "📦 Installing dependencies for PHP $PHP_VERSION..."
+    echo_info "Installing dependencies for PHP $PHP_VERSION..."
 
     composer config platform.php "$PHP_VERSION"
 
@@ -180,8 +186,8 @@ if [ "$MIN_MODE" -eq 0 ]; then
   fi
 
   echo ""
-  echo "🔍 Running compatibility scan..."
-  echo "📁 Scan dir: $SCAN_DIR"
+  echo_info "Running compatibility scan..."
+  echo "Scan dir: $SCAN_DIR"
   echo ""
 
   phpcs -p "$SCAN_DIR" \
@@ -196,7 +202,7 @@ fi
 # -----------------------
 # MIN MODE
 # -----------------------
-echo "🚀 Finding minimum PHP version..."
+echo_info "Finding minimum PHP version..."
 
 if [ -z "$PHP_VERSION" ]; then
   resolve_php_version
@@ -210,8 +216,8 @@ fi
 
 FROM_PHP_VERSION="${FROM_PHP_VERSION:-7.4}"
 
-echo "⚙️ Range start: $FROM_PHP_VERSION"
-echo "⚙️ Range end: $MAX_PHP_VERSION"
+echo_info "Range start: $FROM_PHP_VERSION"
+echo_info "Range end: $MAX_PHP_VERSION"
 
 FILTERED_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
 
@@ -222,14 +228,14 @@ for v in "${FILTERED_VERSIONS[@]}"; do
 
   if run_check "$v"; then
     echo ""
-    echo "🎯 Minimum supported PHP version: $v"
+    echo_success "Minimum supported PHP version: $v"
     rm -rf "$TMP_DIR"
     exit 0
   fi
 done
 
 echo ""
-echo "❌ No compatible PHP version found in range"
+echo_error "No compatible PHP version found in range"
 
 rm -rf "$TMP_DIR"
 exit 1
