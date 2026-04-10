@@ -57,16 +57,16 @@ If you get permission denied errors, use `sudo`:
 sudo make install
 ```
 
-To uninstall:
-
-```bash
-make uninstall
-```
-
 You can customize the installation directory:
 
 ```bash
 make install INSTALL_DIR=$HOME/.local/bin
+```
+
+To uninstall:
+
+```bash
+make uninstall
 ```
 
 ### Option 2: Manual installation
