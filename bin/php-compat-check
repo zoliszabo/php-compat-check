@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+set -e
+
+IMAGE="zoliszabo/php-compat-check"
+VERSION="latest"
+
+# Helper functions
+echo_error() { echo "\033[31m[ERROR]\033[0m $1"; }
+echo_info() { echo "\033[34m[INFO]\033[0m $1"; }
+echo_success() { echo "\033[32m[SUCCESS]\033[0m $1"; }
+
+# Detect Docker
+if ! command -v docker >/dev/null 2>&1; then
+  echo_error "Docker is not installed or not in PATH."
+  exit 1
+fi
+
+# Handle upgrade flag
+if [[ "$1" == "--upgrade" ]]; then
+  echo_info "Pulling latest $IMAGE:$VERSION ..."
+  docker pull "$IMAGE:$VERSION"
+  echo_success "Image updated successfully!"
+  exit 0
+fi
+
+# Ensure image exists locally
+if ! docker image inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+  echo_info "Image not found locally. Pulling $IMAGE:$VERSION ..."
+  docker pull "$IMAGE:$VERSION"
+fi
+
+# Run container (pass-through CLI)
+exec docker run --rm \
+  -v "$(pwd)":/work \
+  -w /work \
+  "$IMAGE:$VERSION" \
+  php-compat-check "$@"
