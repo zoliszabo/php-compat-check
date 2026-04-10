@@ -45,15 +45,25 @@ php-compat-check <repo> <php-version> --with-deps
 
 ## Installation
 
-### Option 1: Use Docker directly
+### Option 1: Use Make (recommended)
 
 ```bash
-docker run --rm zoliszabo/php-compat-check <repo> <php-version>
+make install
 ```
 
-### Option 2: Wrapper script (recommended)
+To uninstall:
 
-Install the wrapper:
+```bash
+make uninstall
+```
+
+You can customize the installation directory:
+
+```bash
+make install INSTALL_DIR=$HOME/.local/bin
+```
+
+### Option 2: Manual installation
 
 ```bash
 cp bin/php-compat-check /usr/local/bin/php-compat-check
@@ -64,6 +74,12 @@ Then use it like a native CLI:
 
 ```bash
 php-compat-check <repo> <php-version>
+```
+
+### Option 3: Use Docker directly
+
+```bash
+docker run --rm zoliszabo/php-compat-check <repo> <php-version>
 ```
 
 ## How it works
