@@ -7,13 +7,166 @@ echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
+echo_note() { echo -e "\033[37m[NOTE]\033[0m $1"; }
 
 # -----------------------
 # CONFIG
 # -----------------------
-MAX_PHP_VERSION="8.5"
+PHP_VERSIONS=("5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0" "8.1" "8.2" "8.3" "8.4" "8.5")
+MAX_PHP_VERSION="${PHP_VERSIONS[-1]}"
 
-VERSIONS=("5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0" "8.1" "8.2" "8.3" "8.4" "8.5")
+# -----------------------
+# FUNCTIONS
+# -----------------------
+resolve_php_version() {
+  local composer_php=""
+  local runtime_php=""
+
+  if [ -f composer.json ]; then
+    composer_php=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
+  fi
+
+  runtime_php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
+
+  echo ""
+  echo_warning "PHP version not provided."
+  echo ""
+
+  [ -n "$composer_php" ] && echo "composer.json: $composer_php"
+  [ -z "$composer_php" ] && echo "composer.json: (not found)"
+
+  [ -n "$runtime_php" ] && echo "runtime PHP: $runtime_php"
+  [ -z "$runtime_php" ] && echo "runtime PHP: (not available)"
+
+  echo ""
+  echo "Please provide: <php-version>"
+  echo ""
+
+  exit 1
+}
+
+
+detect_scan_dirs() {
+  if [ ! -f composer.json ]; then
+    echo "."
+    return
+  fi
+
+  local dirs files combined
+  dirs=$(jq -r '
+    (
+      [.autoload["psr-4"] // {} | to_entries[] | .value | if type == "array" then .[] else . end] +
+      [.autoload["psr-0"] // {} | to_entries[] | .value | if type == "array" then .[] else . end] +
+      (.autoload.classmap // [])
+    ) | .[] | split("/")[0]
+  ' composer.json 2>/dev/null | sort -u || true)
+
+  files=$(jq -r '.autoload.files // [] | .[]' composer.json 2>/dev/null || true)
+
+  combined=$(printf '%s\n%s\n' "$dirs" "$files" | sort -u | grep -v '^$' || true)
+
+  if [ -z "$combined" ]; then
+    echo "."
+  else
+    echo "$combined"
+  fi
+}
+
+COMPOSER_HOME=$(composer config --global home 2>/dev/null)
+
+satisfies_php_constraint() {
+  local version="$1"
+  local constraint="$2"
+  php -r "
+    require '$COMPOSER_HOME/vendor/autoload.php';
+    use Composer\Semver\Semver;
+    exit(Semver::satisfies('$version', '$constraint') ? 0 : 1);
+  "
+}
+
+constraint_min_version() {
+  local constraint="$1"
+  local versions_json
+  versions_json=$(printf '"%s",' "${PHP_VERSIONS[@]}" | sed 's/,$//')
+  php -r "
+    require '$COMPOSER_HOME/vendor/autoload.php';
+    use Composer\Semver\Semver;
+    \$satisfying = Semver::satisfiedBy([$versions_json], '$constraint');
+    \$sorted = Semver::sort(\$satisfying);
+    echo \$sorted[0] ?? '';
+  "
+}
+
+filter_from_version() {
+  local from="$1"
+  local out=()
+
+  for v in "${PHP_VERSIONS[@]}"; do
+    if printf '%s\n%s\n' "$from" "$v" | sort -V | head -n1 | grep -q "$from"; then
+      out+=("$v")
+    fi
+  done
+
+  echo "${out[@]}"
+}
+
+run_check() {
+  local version="$1"
+  local verbose="${2:-0}"
+  local target="${version}-"
+
+  local scan_dirs=("${SCAN_DIRS[@]}")
+
+  if [ "$WITH_DEPS" -eq 1 ]; then
+    rm -rf vendor composer.lock
+
+    jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
+
+    if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ]; then
+      composer config platform.php "$version"
+    fi
+
+    local composer_output
+    if ! composer_output=$(composer install \
+      --no-interaction \
+      --no-progress \
+      --prefer-dist \
+      --no-scripts 2>&1); then
+      echo_error "Composer failed"
+      echo "$composer_output"
+      return 1
+    fi
+
+  fi
+
+  echo ""
+  echo_info "Testing PHP $version..."
+  echo ""
+
+  local phpcs_flags
+  if [ "$verbose" -eq 1 ]; then
+    phpcs_flags="-p"
+  else
+    phpcs_flags="--report-file=/dev/null"
+  fi
+
+  phpcs $phpcs_flags "${scan_dirs[@]}" \
+    --standard=PHPCompatibility \
+    --extensions=php \
+    --ignore="*/vendor/composer/*,*/vendor/autoload.php" \
+    --basepath="$TMP_DIR" \
+    --runtime-set testVersion "$target"
+  local result=$?
+
+  echo ""
+  if [ $result -eq 0 ]; then
+    echo_success "Compatible with PHP $version"
+  else
+    echo_error "Not compatible with PHP $version"
+  fi
+
+  return $result
+}
 
 # -----------------------
 # INPUT
@@ -23,6 +176,8 @@ PHP_VERSION=""
 WITH_DEPS=0
 MIN_MODE=0
 FROM_PHP_VERSION=""
+IGNORE_COMPOSER_PHP_VERSION=0
+SCAN_DIRS=()
 
 for arg in "$@"; do
   case $arg in
@@ -34,6 +189,12 @@ for arg in "$@"; do
       ;;
     --from-php-version=*)
       FROM_PHP_VERSION="${arg#*=}"
+      ;;
+    --ignore-composer-php-version)
+      IGNORE_COMPOSER_PHP_VERSION=1
+      ;;
+    --scan-dirs=*)
+      IFS=',' read -ra SCAN_DIRS <<< "${arg#*=}"
       ;;
     *)
       if [ -z "$REPO" ]; then
@@ -60,7 +221,7 @@ if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
     echo_error "Could not resolve '$REPO' via Packagist. Is it a valid package name?"
     exit 1
   fi
-  REPO=$(echo "$PACKAGIST_JSON" | grep -Po '"repository"\s*:\s*"\K[^"]+' | head -n1 || true)
+  REPO=$(echo "$PACKAGIST_JSON" | jq -r '.package.repository // empty' 2>/dev/null || true)
   if [ -z "$REPO" ]; then
     echo_error "Could not find repository URL for package in Packagist response."
     exit 1
@@ -77,106 +238,13 @@ if ! git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1; then
   exit 1
 fi
 cd "$TMP_DIR"
-
-# -----------------------
-# REQUIRE PHP VERSION (NO DEFAULTS)
-# -----------------------
-resolve_php_version() {
-  local composer_php=""
-  local runtime_php=""
-
-  if [ -f composer.json ]; then
-    composer_php=$(grep -Po '"php"\s*:\s*"\K[^"]+' composer.json 2>/dev/null || true)
-  fi
-
-  runtime_php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
-
-  echo ""
-  echo_warning "PHP version not provided."
-  echo ""
-
-  [ -n "$composer_php" ] && echo "composer.json: $composer_php"
-  [ -z "$composer_php" ] && echo "composer.json: (not found)"
-
-  [ -n "$runtime_php" ] && echo "runtime PHP: $runtime_php"
-  [ -z "$runtime_php" ] && echo "runtime PHP: (not available)"
-
-  echo ""
-  echo "Please provide: <php-version>"
-  echo ""
-
-  exit 1
-}
-
-# -----------------------
-# SCAN DIR
-# -----------------------
-detect_scan_dir() {
-  if [ -d "src" ]; then
-    echo "src"
-  elif [ -d "lib" ]; then
-    echo "lib"
-  else
-    echo "."
-  fi
-}
-
-# -----------------------
-# FILTER RANGE
-# -----------------------
-filter_from_version() {
-  local from="$1"
-  local out=()
-
-  for v in "${VERSIONS[@]}"; do
-    if printf '%s\n%s\n' "$from" "$v" | sort -V | head -n1 | grep -q "$from"; then
-      out+=("$v")
-    fi
-  done
-
-  echo "${out[@]}"
-}
-
-# -----------------------
-# CHECK RUNNER
-# -----------------------
-run_check() {
-  local version="$1"
-  local target="${version}-"
-
-  echo ""
-  echo_info "Testing PHP $version..."
-
-  if [ "$WITH_DEPS" -eq 1 ]; then
-    rm -rf vendor composer.lock
-
-    composer config platform.php "$version"
-
-    if ! composer install \
-      --no-interaction \
-      --no-progress \
-      --prefer-dist \
-      --no-scripts >/dev/null 2>&1; then
-      echo_error "Composer failed"
-      return 1
-    fi
-
-    scan_dir="."
-  else
-    scan_dir=$(detect_scan_dir)
-  fi
-
-  if phpcs -q "$scan_dir" \
-    --standard=PHPCompatibility \
-    --extensions=php \
-    --runtime-set testVersion "$target" >/dev/null; then
-    echo_success "Compatible"
-    return 0
-  else
-    echo_error "Not compatible"
-    return 1
-  fi
-}
+if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
+  mapfile -t SCAN_DIRS < <(detect_scan_dirs)
+fi
+if [ "$WITH_DEPS" -eq 1 ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
+  SCAN_DIRS+=("vendor")
+fi
+echo_info "Scan dirs: ${SCAN_DIRS[*]}"
 
 # -----------------------
 # NORMAL MODE
@@ -189,31 +257,17 @@ if [ "$MIN_MODE" -eq 0 ]; then
 
   echo_info "Target PHP: $PHP_VERSION"
 
-  if [ "$WITH_DEPS" -eq 1 ]; then
-    echo_info "Installing dependencies for PHP $PHP_VERSION..."
-
-    composer config platform.php "$PHP_VERSION"
-
-    composer install \
-      --no-interaction \
-      --no-progress \
-      --prefer-dist \
-      --no-scripts
-
-    SCAN_DIR="."
-  else
-    SCAN_DIR=$(detect_scan_dir)
+  if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ -f composer.json ]; then
+    constraint=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
+    if [ -n "$constraint" ] && ! satisfies_php_constraint "$PHP_VERSION" "$constraint"; then
+      echo_error "PHP $PHP_VERSION does not satisfy the project's requirement: $constraint"
+      echo_note "Use --ignore-composer-php-version to bypass this check."
+      rm -rf "$TMP_DIR"
+      exit 1
+    fi
   fi
 
-  echo ""
-  echo_info "Running compatibility scan..."
-  echo "Scan dir: $SCAN_DIR"
-  echo ""
-
-  phpcs -p "$SCAN_DIR" \
-    --standard=PHPCompatibility \
-    --extensions=php \
-    --runtime-set testVersion "${PHP_VERSION}-" || true
+  run_check "$PHP_VERSION" 1 || true
 
   rm -rf "$TMP_DIR"
   exit 0
@@ -224,31 +278,40 @@ fi
 # -----------------------
 echo_info "Finding minimum PHP version..."
 
-if [ -z "$PHP_VERSION" ]; then
-  resolve_php_version
+EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
+
+php_constraint=""
+if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ -f composer.json ]; then
+  php_constraint=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
 fi
 
-if [ -z "$FROM_PHP_VERSION" ]; then
-  if [ -f composer.json ]; then
-    FROM_PHP_VERSION=$(grep -Po '"php"\s*:\s*"\K[^"]+' composer.json 2>/dev/null || true)
+constraint_min=""
+if [ -n "$php_constraint" ]; then
+  constraint_min=$(constraint_min_version "$php_constraint")
+  if [ -z "$FROM_PHP_VERSION" ]; then
+    FROM_PHP_VERSION="$constraint_min"
   fi
 fi
 
-FROM_PHP_VERSION="${FROM_PHP_VERSION:-7.4}"
+FROM_PHP_VERSION="${FROM_PHP_VERSION:-${PHP_VERSIONS[0]}}"
 
 echo_info "Range start: $FROM_PHP_VERSION"
 echo_info "Range end: $MAX_PHP_VERSION"
 
-FILTERED_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
+FILTERED_PHP_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
 
-for v in "${FILTERED_VERSIONS[@]}"; do
-  if [ "$(printf '%s\n%s\n' "$v" "$MAX_PHP_VERSION" | sort -V | head -n1)" != "$v" ] && [ "$v" != "$MAX_PHP_VERSION" ]; then
+ignore_hint="Use --ignore-composer-php-version to scan without constraint filtering."
+
+for v in "${FILTERED_PHP_VERSIONS[@]}"; do
+  if [ -n "$php_constraint" ] && ! satisfies_php_constraint "$v" "$php_constraint"; then
     continue
   fi
-
   if run_check "$v"; then
     echo ""
     echo_success "Minimum supported PHP version: $v"
+    if [ -n "$php_constraint" ] && { [ "$v" = "$constraint_min" ] || [ "$v" = "$EXPLICIT_FROM_PHP_VERSION" ]; }; then
+      echo_note "$ignore_hint"
+    fi
     rm -rf "$TMP_DIR"
     exit 0
   fi
@@ -256,6 +319,9 @@ done
 
 echo ""
 echo_error "No compatible PHP version found in range"
+if [ -n "$php_constraint" ]; then
+  echo "Note: $ignore_hint"
+fi
 
 rm -rf "$TMP_DIR"
 exit 1

@@ -1,8 +1,9 @@
-.PHONY: install uninstall
+.PHONY: install uninstall build run
 
 INSTALL_DIR ?= /usr/local/bin
 SCRIPT_SOURCE = bin/php-compat-check
 SCRIPT_NAME = php-compat-check
+DEV_IMAGE = php-compat-check:dev
 
 install:
 	@install -D -m 755 $(SCRIPT_SOURCE) $(INSTALL_DIR)/$(SCRIPT_NAME)
@@ -11,3 +12,9 @@ install:
 uninstall:
 	@rm -f $(INSTALL_DIR)/$(SCRIPT_NAME)
 	@echo "✓ $(SCRIPT_NAME) uninstalled from $(INSTALL_DIR)"
+
+build:
+	docker build -t $(DEV_IMAGE) ./docker
+
+run: build
+	docker run --rm $(DEV_IMAGE) php-compat-check $(ARGS)

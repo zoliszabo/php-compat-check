@@ -4,6 +4,8 @@ RUN apk add --no-cache \
     git \
     unzip \
     bash \
+    curl \
+    jq \
     libzip-dev
 
 RUN docker-php-ext-install zip
@@ -16,7 +18,9 @@ RUN composer global config allow-plugins.dealerdirect/phpcodesniffer-composer-in
     --no-progress \
     --prefer-dist \
     squizlabs/php_codesniffer \
-    phpcompatibility/php-compatibility
+    dealerdirect/phpcodesniffer-composer-installer \
+    phpcompatibility/php-compatibility \
+    composer/semver
 
 ENV PATH="/root/.composer/vendor/bin:/root/.config/composer/vendor/bin:${PATH}"
 
