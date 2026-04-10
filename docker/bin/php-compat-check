@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+
+set -e
+
+# -----------------------
+# CONFIG
+# -----------------------
+MAX_PHP_VERSION="8.5"
+
+VERSIONS=("5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0" "8.1" "8.2" "8.3" "8.4" "8.5")
+
+# -----------------------
+# INPUT
+# -----------------------
+REPO=""
+PHP_VERSION=""
+WITH_DEPS=0
+MIN_MODE=0
+FROM_PHP_VERSION=""
+
+for arg in "$@"; do
+  case $arg in
+    --with-deps)
+      WITH_DEPS=1
+      ;;
+    --min-php-version)
+      MIN_MODE=1
+      ;;
+    --from-php-version=*)
+      FROM_PHP_VERSION="${arg#*=}"
+      ;;
+    *)
+      if [ -z "$REPO" ]; then
+        REPO="$arg"
+      elif [ -z "$PHP_VERSION" ]; then
+        PHP_VERSION="$arg"
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$REPO" ]; then
+  echo "Usage:"
+  echo "  php-compat-check <repo> <php-version> [--with-deps]"
+  echo "  php-compat-check <repo> <php-version> --min-php-version [--from-php-version=7.4]"
+  exit 1
+fi
+
+TMP_DIR=$(mktemp -d)
+
+echo "📥 Cloning repository..."
+git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1
+cd "$TMP_DIR"
+
+# -----------------------
+# REQUIRE PHP VERSION (NO DEFAULTS)
+# -----------------------
+resolve_php_version() {
+  local composer_php=""
+  local runtime_php=""
+
+  if [ -f composer.json ]; then
+    composer_php=$(grep -Po '"php"\s*:\s*"\K[^"]+' composer.json 2>/dev/null || true)
+  fi
+
+  runtime_php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
+
+  echo ""
+  echo "⚠ PHP version not provided."
+  echo ""
+
+  [ -n "$composer_php" ] && echo "📦 composer.json: $composer_php"
+  [ -z "$composer_php" ] && echo "📦 composer.json: (not found)"
+
+  [ -n "$runtime_php" ] && echo "🐘 runtime PHP: $runtime_php"
+  [ -z "$runtime_php" ] && echo "🐘 runtime PHP: (not available)"
+
+  echo ""
+  echo "👉 Please provide: <php-version>"
+  echo ""
+
+  exit 1
+}
+
+# -----------------------
+# SCAN DIR
+# -----------------------
+detect_scan_dir() {
+  if [ -d "src" ]; then
+    echo "src"
+  elif [ -d "lib" ]; then
+    echo "lib"
+  else
+    echo "."
+  fi
+}
+
+# -----------------------
+# FILTER RANGE
+# -----------------------
+filter_from_version() {
+  local from="$1"
+  local out=()
+
+  for v in "${VERSIONS[@]}"; do
+    if printf '%s\n%s\n' "$from" "$v" | sort -V | head -n1 | grep -q "$from"; then
+      out+=("$v")
+    fi
+  done
+
+  echo "${out[@]}"
+}
+
+# -----------------------
+# CHECK RUNNER
+# -----------------------
+run_check() {
+  local version="$1"
+  local target="${version}-"
+
+  echo ""
+  echo "🔎 Testing PHP $version..."
+
+  if [ "$WITH_DEPS" -eq 1 ]; then
+    rm -rf vendor composer.lock
+
+    composer config platform.php "$version"
+
+    if ! composer install \
+      --no-interaction \
+      --no-progress \
+      --prefer-dist \
+      --no-scripts >/dev/null 2>&1; then
+      echo "❌ Composer failed"
+      return 1
+    fi
+
+    scan_dir="."
+  else
+    scan_dir=$(detect_scan_dir)
+  fi
+
+  if phpcs -q "$scan_dir" \
+    --standard=PHPCompatibility \
+    --extensions=php \
+    --runtime-set testVersion "$target" >/dev/null; then
+    echo "✅ Compatible"
+    return 0
+  else
+    echo "❌ Not compatible"
+    return 1
+  fi
+}
+
+# -----------------------
+# NORMAL MODE
+# -----------------------
+if [ "$MIN_MODE" -eq 0 ]; then
+
+  if [ -z "$PHP_VERSION" ]; then
+    resolve_php_version
+  fi
+
+  echo "📌 Target PHP: $PHP_VERSION"
+
+  if [ "$WITH_DEPS" -eq 1 ]; then
+    echo "📦 Installing dependencies for PHP $PHP_VERSION..."
+
+    composer config platform.php "$PHP_VERSION"
+
+    composer install \
+      --no-interaction \
+      --no-progress \
+      --prefer-dist \
+      --no-scripts
+
+    SCAN_DIR="."
+  else
+    SCAN_DIR=$(detect_scan_dir)
+  fi
+
+  echo ""
+  echo "🔍 Running compatibility scan..."
+  echo "📁 Scan dir: $SCAN_DIR"
+  echo ""
+
+  phpcs -p "$SCAN_DIR" \
+    --standard=PHPCompatibility \
+    --extensions=php \
+    --runtime-set testVersion "${PHP_VERSION}-" || true
+
+  rm -rf "$TMP_DIR"
+  exit 0
+fi
+
+# -----------------------
+# MIN MODE
+# -----------------------
+echo "🚀 Finding minimum PHP version..."
+
+if [ -z "$PHP_VERSION" ]; then
+  resolve_php_version
+fi
+
+if [ -z "$FROM_PHP_VERSION" ]; then
+  if [ -f composer.json ]; then
+    FROM_PHP_VERSION=$(grep -Po '"php"\s*:\s*"\K[^"]+' composer.json 2>/dev/null || true)
+  fi
+fi
+
+FROM_PHP_VERSION="${FROM_PHP_VERSION:-7.4}"
+
+echo "⚙️ Range start: $FROM_PHP_VERSION"
+echo "⚙️ Range end: $MAX_PHP_VERSION"
+
+FILTERED_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
+
+for v in "${FILTERED_VERSIONS[@]}"; do
+  if [ "$(printf '%s\n%s\n' "$v" "$MAX_PHP_VERSION" | sort -V | head -n1)" != "$v" ] && [ "$v" != "$MAX_PHP_VERSION" ]; then
+    continue
+  fi
+
+  if run_check "$v"; then
+    echo ""
+    echo "🎯 Minimum supported PHP version: $v"
+    rm -rf "$TMP_DIR"
+    exit 0
+  fi
+done
+
+echo ""
+echo "❌ No compatible PHP version found in range"
+
+rm -rf "$TMP_DIR"
+exit 1
