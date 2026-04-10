@@ -71,7 +71,11 @@ fi
 TMP_DIR=$(mktemp -d)
 
 echo_info "Cloning repository..."
-git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1
+if ! git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1; then
+  echo_error "Failed to clone repository: $REPO"
+  rm -rf "$TMP_DIR"
+  exit 1
+fi
 cd "$TMP_DIR"
 
 # -----------------------
