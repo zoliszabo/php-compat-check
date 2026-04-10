@@ -51,6 +51,12 @@ php-compat-check <repo> <php-version> --with-deps
 make install
 ```
 
+If you get permission denied errors, use `sudo`:
+
+```bash
+sudo make install
+```
+
 To uninstall:
 
 ```bash
