@@ -9,8 +9,9 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 - Check compatibility against a specific PHP version
 - Automatically detect the minimum supported PHP version
 - Optional dependency-aware analysis using Composer
-- Accepts a Git repository URL or a Packagist package name (`vendor/package`)
+- Accepts a Git repository URL or a Packagist package name (`vendor/package[:version]`)
 - Automatically resolves scan directories from `composer.json` autoload configuration
+- Auto-detects polyfill libraries and suppresses false positives accordingly
 - Runs in a Docker container for consistent results
 - Simple CLI interface
 
@@ -22,11 +23,14 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 php-compat-check <repo> <php-version>
 ```
 
-The `<repo>` argument accepts either a Git URL or a Packagist package name:
+The `<repo>` argument accepts a Git URL or a Packagist package name, with an optional version:
 
 ```bash
 php-compat-check https://github.com/vendor/package 8.1
 php-compat-check vendor/package 8.1
+php-compat-check vendor/package:^6.0 8.1
+php-compat-check vendor/package:dev-main 8.1
+php-compat-check https://github.com/vendor/package 8.1 --version=v6.0.2
 ```
 
 ### Find minimum supported PHP version
@@ -48,12 +52,19 @@ If the found minimum equals the constraint's own minimum (or the explicitly prov
 | `--from-php-version=<version>` | Override the lower bound when using `--min-php-version` |
 | `--ignore-composer-php-version` | Ignore `require.php` from `composer.json` when determining the scan range, filtering versions, or setting the platform version |
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
+| `--version=<ref>` | Check out a specific version for URL repos (tag, branch, or `dev-main` style) |
 
 ### Examples
 
 ```bash
 # Check against a specific version
 php-compat-check sebastian/diff 8.1
+
+# Check a specific release
+php-compat-check sebastian/diff:^6.0 8.1
+
+# Check the dev-main branch
+php-compat-check sebastian/diff:dev-main 8.1
 
 # Find minimum supported version
 php-compat-check sebastian/diff --min-php-version
@@ -75,7 +86,11 @@ php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 3. Detects scan directories from `composer.json` autoload (`psr-4`, `psr-0`, `classmap`, `files`); falls back to `.`
 4. When `--with-deps` is set: strips `require-dev` and `autoload-dev`, simulates the target PHP platform version, and installs non-dev dependencies
 5. Validates the requested version (or scanned range) against `composer.json`'s `require.php` constraint using Composer's semver library, unless `--ignore-composer-php-version` is set
-6. Runs PHPCompatibility via PHP_CodeSniffer against the resolved directories, ignoring `vendor/composer/` and `vendor/autoload.php`
+6. Auto-detects polyfill libraries and applies the appropriate PHPCompatibility companion standards to suppress false positives:
+   - Without `--with-deps`: reads `require` from `composer.json`
+   - With `--with-deps`: reads `composer.lock` after install to catch transitive polyfill dependencies
+   - Supported: `symfony/polyfill-php*`, `paragonie/random_compat`, `paragonie/sodium_compat`, `ircmaxell/password-compat`
+7. Runs PHPCompatibility via PHP_CodeSniffer against the resolved directories, ignoring `vendor/composer/`, `vendor/autoload.php`, and polyfill version-gated bootstrap files (e.g. `bootstrap80.php`)
 
 ## Installation
 

@@ -72,6 +72,30 @@ detect_scan_dirs() {
   fi
 }
 
+detect_polyfill_standards() {
+  local packages="$1"
+  local standards=()
+
+  local symfony_versions=("54" "55" "56" "70" "71" "72" "73" "74" "80" "81" "82" "83" "84" "85")
+  for ver in "${symfony_versions[@]}"; do
+    if echo "$packages" | grep -qx "symfony/polyfill-php${ver}"; then
+      standards+=("PHPCompatibilitySymfonyPolyfillPHP${ver}")
+    fi
+  done
+
+  if echo "$packages" | grep -qx "paragonie/random_compat"; then
+    standards+=("PHPCompatibilityParagonieRandomCompat")
+  fi
+  if echo "$packages" | grep -qx "paragonie/sodium_compat"; then
+    standards+=("PHPCompatibilityParagonieSodiumCompat")
+  fi
+  if echo "$packages" | grep -qx "ircmaxell/password-compat"; then
+    standards+=("PHPCompatibilityPasswordCompat")
+  fi
+
+  printf '%s\n' "${standards[@]}"
+}
+
 COMPOSER_HOME=$(composer config --global home 2>/dev/null)
 
 satisfies_php_constraint() {
@@ -137,6 +161,16 @@ run_check() {
       return 1
     fi
 
+    if [ -f composer.lock ]; then
+      local lock_packages
+      lock_packages=$(jq -r '.packages[].name' composer.lock 2>/dev/null || true)
+      mapfile -t extra_standards < <(detect_polyfill_standards "$lock_packages")
+      if [ ${#extra_standards[@]} -gt 0 ]; then
+        PHPCS_STANDARDS="${PHPCS_STANDARDS},$(IFS=,; echo "${extra_standards[*]}")"
+        echo_info "Polyfill standards: ${extra_standards[*]}"
+      fi
+    fi
+
   fi
 
   echo ""
@@ -151,9 +185,9 @@ run_check() {
   fi
 
   phpcs $phpcs_flags "${scan_dirs[@]}" \
-    --standard=PHPCompatibility \
+    --standard="$PHPCS_STANDARDS" \
     --extensions=php \
-    --ignore="*/vendor/composer/*,*/vendor/autoload.php" \
+    --ignore="*/vendor/composer/*,*/vendor/autoload.php,*/polyfill-*/bootstrap*.php" \
     --basepath="$TMP_DIR" \
     --runtime-set testVersion "$target"
   local result=$?
@@ -292,6 +326,16 @@ if [ "$WITH_DEPS" -eq 1 ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SC
   SCAN_DIRS+=("vendor")
 fi
 echo_info "Scan dirs: ${SCAN_DIRS[*]}"
+
+PHPCS_STANDARDS="PHPCompatibility"
+if [ "$WITH_DEPS" -eq 0 ] && [ -f composer.json ]; then
+  require_packages=$(jq -r '.require // {} | keys[]' composer.json 2>/dev/null || true)
+  mapfile -t extra_standards < <(detect_polyfill_standards "$require_packages")
+  if [ ${#extra_standards[@]} -gt 0 ]; then
+    PHPCS_STANDARDS="${PHPCS_STANDARDS},$(IFS=,; echo "${extra_standards[*]}")"
+    echo_info "Polyfill standards: ${extra_standards[*]}"
+  fi
+fi
 
 # -----------------------
 # NORMAL MODE

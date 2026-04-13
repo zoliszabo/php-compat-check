@@ -20,7 +20,10 @@ RUN composer global config allow-plugins.dealerdirect/phpcodesniffer-composer-in
     squizlabs/php_codesniffer \
     dealerdirect/phpcodesniffer-composer-installer \
     composer/semver \
-    phpcompatibility/php-compatibility:"^10.0.0@dev"
+    phpcompatibility/php-compatibility:"^10.0.0@dev" \
+    phpcompatibility/phpcompatibility-symfony:"*@dev" \
+    phpcompatibility/phpcompatibility-paragonie:"*@dev" \
+    phpcompatibility/phpcompatibility-passwordcompat:"*@dev"
 
 ENV PATH="/root/.composer/vendor/bin:/root/.config/composer/vendor/bin:${PATH}"
 
