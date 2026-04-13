@@ -172,6 +172,7 @@ run_check() {
 # INPUT
 # -----------------------
 REPO=""
+REPO_VERSION=""
 PHP_VERSION=""
 WITH_DEPS=0
 MIN_MODE=0
@@ -196,6 +197,9 @@ for arg in "$@"; do
     --scan-dirs=*)
       IFS=',' read -ra SCAN_DIRS <<< "${arg#*=}"
       ;;
+    --version=*)
+      REPO_VERSION="${arg#*=}"
+      ;;
     *)
       if [ -z "$REPO" ]; then
         REPO="$arg"
@@ -205,6 +209,17 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Extract version from vendor/package:constraint syntax
+if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+:.+$ ]]; then
+  COLON_VERSION="${REPO#*:}"
+  REPO="${REPO%%:*}"
+  if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$COLON_VERSION" ]; then
+    echo_error "Conflicting versions: ':' syntax specifies '$COLON_VERSION' but --version specifies '$REPO_VERSION'."
+    exit 1
+  fi
+  REPO_VERSION="$COLON_VERSION"
+fi
 
 if [ -z "$REPO" ]; then
   echo "Usage:"
@@ -221,22 +236,54 @@ if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
     echo_error "Could not resolve '$REPO' via Packagist. Is it a valid package name?"
     exit 1
   fi
+
+  if [ -n "$REPO_VERSION" ] && [[ ! "$REPO_VERSION" =~ ^dev- ]]; then
+    versions_json=$(echo "$PACKAGIST_JSON" | jq -r '[.package.versions | keys[] | select(startswith("dev-") | not) | select(endswith("-dev") | not)]' 2>/dev/null || true)
+    REPO_VERSION=$(php -r "
+      require '$COMPOSER_HOME/vendor/autoload.php';
+      use Composer\Semver\Semver;
+      \$versions = json_decode('$versions_json', true);
+      \$matching = Semver::satisfiedBy(\$versions, '$REPO_VERSION');
+      \$sorted = Semver::rsort(\$matching);
+      echo \$sorted[0] ?? '';
+    ")
+    if [ -z "$REPO_VERSION" ]; then
+      echo_error "No matching version found for constraint '$COLON_VERSION'."
+      exit 1
+    fi
+  fi
+
   REPO=$(echo "$PACKAGIST_JSON" | jq -r '.package.repository // empty' 2>/dev/null || true)
   if [ -z "$REPO" ]; then
     echo_error "Could not find repository URL for package in Packagist response."
     exit 1
   fi
   echo_info "Resolved to: $REPO"
+  [ -n "$REPO_VERSION" ] && echo_info "Resolved version: $REPO_VERSION"
 fi
 
 TMP_DIR=$(mktemp -d)
 
-echo_info "Cloning repository..."
-if ! git clone --depth=1 "$REPO" "$TMP_DIR" >/dev/null 2>&1; then
+CLONE_ARGS="--depth=1"
+if [ -n "$REPO_VERSION" ]; then
+  echo_info "Cloning repository at $REPO_VERSION..."
+  GIT_REF="${REPO_VERSION#dev-}"
+  CLONE_ARGS="$CLONE_ARGS --branch $GIT_REF"
+else
+  echo_info "Cloning repository..."
+fi
+if ! git clone $CLONE_ARGS "$REPO" "$TMP_DIR" >/dev/null 2>&1; then
   echo_error "Failed to clone repository: $REPO"
   rm -rf "$TMP_DIR"
   exit 1
 fi
+CLONED_VERSION=$(git -C "$TMP_DIR" describe --tags --exact-match 2>/dev/null || true)
+if [ -z "$CLONED_VERSION" ]; then
+  branch=$(git -C "$TMP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  CLONED_VERSION="dev-${branch:-unknown}"
+fi
+CLONED_HASH=$(git -C "$TMP_DIR" rev-parse --short HEAD 2>/dev/null || true)
+echo_info "Cloned version: $CLONED_VERSION${CLONED_HASH:+ ($CLONED_HASH)}"
 cd "$TMP_DIR"
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
