@@ -195,7 +195,7 @@ print_config() {
   echo_info "Package:               ${ORIGINAL_REPO} (${version_display})"
   echo_info "PHP:                   ${php_info}"
   echo_info "Mode:                  ${mode}"
-  echo_info "Scan deps:             ${SCAN_DEPS:-no}"
+  echo_info "Check deps:             ${CHECK_DEPS:-no}"
   echo_info "Ignore PHP constraint: $([ "$IGNORE_COMPOSER_PHP_VERSION" -eq 1 ] && echo 'yes' || echo 'no')"
   echo_info "Scan dirs:             ${SCAN_DIRS[*]}"
   echo_info "Standards:             ${PHPCS_STANDARDS}"
@@ -210,7 +210,7 @@ run_check() {
 
   local scan_dirs=("${SCAN_DIRS[@]}")
 
-  if [ -n "$SCAN_DEPS" ]; then
+  if [ -n "$CHECK_DEPS" ]; then
     rm -rf vendor composer.lock
 
     jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
@@ -254,13 +254,13 @@ run_check() {
     fi
 
     local trusted_ignores=()
-    if [ "$SCAN_DEPS" != "full" ]; then
+    if [ "$CHECK_DEPS" != "full" ]; then
       mapfile -t trusted_ignores < <(collect_compatible_vendor_ignores "$version")
       for trusted_path in "${trusted_ignores[@]}"; do
         phpcs_ignore="${phpcs_ignore},*/${trusted_path}/*"
       done
       if [ ${#trusted_ignores[@]} -gt 0 ]; then
-        echo_info "Trusting ${#trusted_ignores[@]} vendor package(s) with compatible PHP constraint (use --scan-deps=full to include them)"
+        echo_info "Trusting ${#trusted_ignores[@]} vendor package(s) with compatible PHP constraint (use --check-deps=full to include them)"
       fi
     fi
 
@@ -375,7 +375,7 @@ run_check() {
 REPO=""
 REPO_VERSION=""
 PHP_VERSION=""
-SCAN_DEPS=""
+CHECK_DEPS=""
 MIN_MODE=0
 FROM_PHP_VERSION=""
 IGNORE_COMPOSER_PHP_VERSION=0
@@ -385,15 +385,15 @@ SCAN_DIRS=()
 
 for arg in "$@"; do
   case $arg in
-    --scan-deps)
-      SCAN_DEPS="shallow"
+    --check-deps)
+      CHECK_DEPS="shallow"
       ;;
-    --scan-deps=*)
+    --check-deps=*)
       val="${arg#*=}"
       if [ "$val" = "shallow" ] || [ "$val" = "full" ]; then
-        SCAN_DEPS="$val"
+        CHECK_DEPS="$val"
       else
-        echo_error "Invalid --scan-deps value: '$val'. Use 'shallow' or 'full'."
+        echo_error "Invalid --check-deps value: '$val'. Use 'shallow' or 'full'."
         exit 1
       fi
       ;;
@@ -441,7 +441,7 @@ fi
 
 if [ -z "$REPO" ]; then
   echo "Usage:"
-  echo "  php-compat-check <repo> <php-version> [--scan-deps[=shallow|full]]"
+  echo "  php-compat-check <repo> <php-version> [--check-deps[=shallow|full]]"
   echo "  php-compat-check <repo> --min-php-version [--from-php-version=7.4]"
   exit 1
 fi
@@ -505,12 +505,12 @@ cd "$TMP_DIR"
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
 fi
-if [ -n "$SCAN_DEPS" ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
+if [ -n "$CHECK_DEPS" ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
   SCAN_DIRS+=("vendor")
 fi
 
 PHPCS_STANDARDS="PHPCompatibility"
-if [ -z "$SCAN_DEPS" ] && [ -f composer.json ]; then
+if [ -z "$CHECK_DEPS" ] && [ -f composer.json ]; then
   require_packages=$(jq -r '.require // {} | keys[]' composer.json 2>/dev/null || true)
   mapfile -t extra_standards < <(detect_polyfill_standards "$require_packages")
   if [ ${#extra_standards[@]} -gt 0 ]; then
