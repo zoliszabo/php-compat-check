@@ -258,20 +258,58 @@ run_check() {
   echo_info "Testing PHP $version..."
   echo ""
 
-  local phpcs_flags
+  local phpcs_args=(
+    "${scan_dirs[@]}"
+    --standard="$PHPCS_STANDARDS"
+    --extensions=php
+    --ignore="$phpcs_ignore"
+    --basepath="$TMP_DIR"
+    --runtime-set testVersion "$target"
+  )
+
+  local tmpjson
+  tmpjson=$(mktemp)
+  phpcs --report=json "${phpcs_args[@]}" > "$tmpjson" 2>/dev/null || true
+
+  local phpcs_errors phpcs_warnings
+  phpcs_errors=$(jq '.totals.errors // 0' "$tmpjson" 2>/dev/null || echo 1)
+  phpcs_warnings=$(jq '.totals.warnings // 0' "$tmpjson" 2>/dev/null || echo 0)
+
   if [ "$verbose" -eq 1 ]; then
-    phpcs_flags="-p"
-  else
-    phpcs_flags="--report-file=/dev/null"
+    php -r "
+      \$data = json_decode(file_get_contents('$tmpjson'), true);
+      if (!\$data) exit;
+      \$showWarn = (bool) $SHOW_WARNINGS;
+      \$sep = str_repeat('-', 80);
+      foreach (\$data['files'] as \$file => \$info) {
+        \$msgs = array_filter(\$info['messages'], fn(\$m) => \$m['type'] === 'ERROR' || \$showWarn);
+        if (!\$msgs) continue;
+        \$errCnt  = \$info['errors'];
+        \$warnCnt = \$showWarn ? \$info['warnings'] : 0;
+        \$affected = count(\$msgs);
+        echo PHP_EOL . 'FILE: ' . \$file . PHP_EOL;
+        echo \$sep . PHP_EOL;
+        \$sum = 'FOUND ' . \$errCnt . ' ' . (\$errCnt === 1 ? 'ERROR' : 'ERRORS');
+        if (\$warnCnt) \$sum .= ' AND ' . \$warnCnt . ' ' . (\$warnCnt === 1 ? 'WARNING' : 'WARNINGS');
+        \$sum .= ' AFFECTING ' . \$affected . ' ' . (\$affected === 1 ? 'LINE' : 'LINES');
+        echo \$sum . PHP_EOL . \$sep . PHP_EOL;
+        foreach (\$msgs as \$msg) {
+          \$type = \$msg['type'] === 'ERROR'
+            ? \"\033[31mERROR  \033[0m\"
+            : \"\033[33mWARNING\033[0m\";
+          printf(' %4d | %s | %s' . PHP_EOL, \$msg['line'], \$type, \$msg['message']);
+        }
+        echo \$sep . PHP_EOL;
+      }
+    "
+    if [ "$SHOW_WARNINGS" -eq 0 ] && [ "${phpcs_warnings:-0}" -gt 0 ]; then
+      echo_warning "${phpcs_warnings} warning(s) found. Run with --show-warnings to display them."
+    fi
   fi
 
-  phpcs $phpcs_flags "${scan_dirs[@]}" \
-    --standard="$PHPCS_STANDARDS" \
-    --extensions=php \
-    --ignore="$phpcs_ignore" \
-    --basepath="$TMP_DIR" \
-    --runtime-set testVersion "$target"
-  local result=$?
+  rm -f "$tmpjson"
+  local result
+  [ "${phpcs_errors:-1}" -gt 0 ] && result=1 || result=0
 
   echo ""
   if [ $result -eq 0 ]; then
@@ -294,6 +332,7 @@ MIN_MODE=0
 FROM_PHP_VERSION=""
 IGNORE_COMPOSER_PHP_VERSION=0
 SHOW_DEPS=0
+SHOW_WARNINGS=0
 SCAN_DIRS=()
 
 for arg in "$@"; do
@@ -312,6 +351,9 @@ for arg in "$@"; do
       ;;
     --show-deps)
       SHOW_DEPS=1
+      ;;
+    --show-warnings)
+      SHOW_WARNINGS=1
       ;;
     --scan-dirs=*)
       IFS=',' read -ra SCAN_DIRS <<< "${arg#*=}"
