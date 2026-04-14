@@ -93,7 +93,7 @@ detect_polyfill_standards() {
     standards+=("PHPCompatibilityPasswordCompat")
   fi
 
-  printf '%s\n' "${standards[@]}"
+  [ ${#standards[@]} -gt 0 ] && printf '%s\n' "${standards[@]}"
 }
 
 COMPOSER_HOME=$(composer config --global home 2>/dev/null)
@@ -134,6 +134,32 @@ filter_from_version() {
   echo "${out[@]}"
 }
 
+collect_compatible_vendor_ignores() {
+  local target_version="$1"
+  local manifests=()
+
+  for manifest in vendor/*/*/composer.json; do
+    [ -f "$manifest" ] && manifests+=("$manifest")
+  done
+
+  [ ${#manifests[@]} -eq 0 ] && return
+
+  local manifests_json
+  manifests_json=$(printf '"%s",' "${manifests[@]}" | sed 's/,$//')
+
+  php -r "
+    require '$COMPOSER_HOME/vendor/autoload.php';
+    use Composer\Semver\Semver;
+    foreach ([$manifests_json] as \$manifest) {
+      \$data = json_decode(file_get_contents(\$manifest), true);
+      \$constraint = \$data['require']['php'] ?? '';
+      if (\$constraint !== '' && Semver::satisfies('$target_version', \$constraint)) {
+        echo dirname(\$manifest) . PHP_EOL;
+      }
+    }
+  "
+}
+
 collect_incompatible_vendor_ignores() {
   local target_version="$1"
   local manifests=()
@@ -169,7 +195,7 @@ print_config() {
   echo_info "Package:               ${ORIGINAL_REPO} (${version_display})"
   echo_info "PHP:                   ${php_info}"
   echo_info "Mode:                  ${mode}"
-  echo_info "With deps:             $([ "$WITH_DEPS" -eq 1 ] && echo 'yes' || echo 'no')"
+  echo_info "Scan deps:             ${SCAN_DEPS:-no}"
   echo_info "Ignore PHP constraint: $([ "$IGNORE_COMPOSER_PHP_VERSION" -eq 1 ] && echo 'yes' || echo 'no')"
   echo_info "Scan dirs:             ${SCAN_DIRS[*]}"
   echo_info "Standards:             ${PHPCS_STANDARDS}"
@@ -179,12 +205,12 @@ print_config() {
 run_check() {
   local version="$1"
   local verbose="${2:-0}"
-  local target="${version}-"
+  local target="${version}"
   local phpcs_ignore="*/vendor/composer/*,*/vendor/autoload.php,*/polyfill-*/bootstrap*.php"
 
   local scan_dirs=("${SCAN_DIRS[@]}")
 
-  if [ "$WITH_DEPS" -eq 1 ]; then
+  if [ -n "$SCAN_DEPS" ]; then
     rm -rf vendor composer.lock
 
     jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
@@ -227,6 +253,17 @@ run_check() {
       done
     fi
 
+    local trusted_ignores=()
+    if [ "$SCAN_DEPS" != "full" ]; then
+      mapfile -t trusted_ignores < <(collect_compatible_vendor_ignores "$version")
+      for trusted_path in "${trusted_ignores[@]}"; do
+        phpcs_ignore="${phpcs_ignore},*/${trusted_path}/*"
+      done
+      if [ ${#trusted_ignores[@]} -gt 0 ]; then
+        echo_info "Trusting ${#trusted_ignores[@]} vendor package(s) with compatible PHP constraint (use --scan-deps=full to include them)"
+      fi
+    fi
+
     if [ "$SHOW_DEPS" -eq 1 ] && [ -f composer.lock ]; then
       local total_pkgs
       total_pkgs=$(jq '.packages | length' composer.lock 2>/dev/null || echo 0)
@@ -235,6 +272,7 @@ run_check() {
       while IFS=$'\t' read -r pkg_name pkg_version; do
         local vendor_path="vendor/${pkg_name}"
         local is_ignored=0
+        local is_trusted=0
         local pkg_php_req=""
         for i in "${!incompatible_ignores[@]}"; do
           if [ "${incompatible_ignores[$i]}" = "$vendor_path" ]; then
@@ -243,8 +281,18 @@ run_check() {
             break
           fi
         done
+        if [ "$is_ignored" -eq 0 ]; then
+          for trusted_path in "${trusted_ignores[@]}"; do
+            if [ "$trusted_path" = "$vendor_path" ]; then
+              is_trusted=1
+              break
+            fi
+          done
+        fi
         if [ "$is_ignored" -eq 1 ]; then
           printf "    %-40s  %-14s  \033[33mignored\033[0m (requires PHP %s)\n" "$pkg_name" "$pkg_version" "$pkg_php_req"
+        elif [ "$is_trusted" -eq 1 ]; then
+          printf "    %-40s  %-14s  \033[36mtrusted\033[0m\n" "$pkg_name" "$pkg_version"
         else
           printf "    %-40s  %-14s  \033[32mchecked\033[0m\n" "$pkg_name" "$pkg_version"
         fi
@@ -327,7 +375,7 @@ run_check() {
 REPO=""
 REPO_VERSION=""
 PHP_VERSION=""
-WITH_DEPS=0
+SCAN_DEPS=""
 MIN_MODE=0
 FROM_PHP_VERSION=""
 IGNORE_COMPOSER_PHP_VERSION=0
@@ -337,8 +385,17 @@ SCAN_DIRS=()
 
 for arg in "$@"; do
   case $arg in
-    --with-deps)
-      WITH_DEPS=1
+    --scan-deps)
+      SCAN_DEPS="shallow"
+      ;;
+    --scan-deps=*)
+      val="${arg#*=}"
+      if [ "$val" = "shallow" ] || [ "$val" = "full" ]; then
+        SCAN_DEPS="$val"
+      else
+        echo_error "Invalid --scan-deps value: '$val'. Use 'shallow' or 'full'."
+        exit 1
+      fi
       ;;
     --min-php-version)
       MIN_MODE=1
@@ -384,8 +441,8 @@ fi
 
 if [ -z "$REPO" ]; then
   echo "Usage:"
-  echo "  php-compat-check <repo> <php-version> [--with-deps]"
-  echo "  php-compat-check <repo> <php-version> --min-php-version [--from-php-version=7.4]"
+  echo "  php-compat-check <repo> <php-version> [--scan-deps[=shallow|full]]"
+  echo "  php-compat-check <repo> --min-php-version [--from-php-version=7.4]"
   exit 1
 fi
 
@@ -448,12 +505,12 @@ cd "$TMP_DIR"
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
 fi
-if [ "$WITH_DEPS" -eq 1 ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
+if [ -n "$SCAN_DEPS" ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
   SCAN_DIRS+=("vendor")
 fi
 
 PHPCS_STANDARDS="PHPCompatibility"
-if [ "$WITH_DEPS" -eq 0 ] && [ -f composer.json ]; then
+if [ -z "$SCAN_DEPS" ] && [ -f composer.json ]; then
   require_packages=$(jq -r '.require // {} | keys[]' composer.json 2>/dev/null || true)
   mapfile -t extra_standards < <(detect_polyfill_standards "$require_packages")
   if [ ${#extra_standards[@]} -gt 0 ]; then
