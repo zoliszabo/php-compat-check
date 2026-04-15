@@ -191,14 +191,21 @@ print_config() {
   local php_info="$2"
   local version_display="${CLONED_VERSION}${CLONED_HASH:+, ${CLONED_HASH}}"
 
+  local composer_php=""
+  if [ -f composer.json ]; then
+    composer_php=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
+  fi
+  local composer_php_display="${composer_php:-none}"
+  [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 1 ] && [ -n "$composer_php" ] && composer_php_display="${composer_php} (ignored)"
+
   echo ""
-  echo_info "Package:               ${ORIGINAL_REPO} (${version_display})"
-  echo_info "PHP:                   ${php_info}"
-  echo_info "Mode:                  ${mode}"
-  echo_info "Check deps:             ${CHECK_DEPS:-no}"
-  echo_info "Ignore PHP constraint: $([ "$IGNORE_COMPOSER_PHP_VERSION" -eq 1 ] && echo 'yes' || echo 'no')"
-  echo_info "Scan dirs:             ${SCAN_DIRS[*]}"
-  echo_info "Standards:             ${PHPCS_STANDARDS}"
+  echo_info "Package:                 ${ORIGINAL_REPO} (${version_display})"
+  echo_info "PHP:                     ${php_info}"
+  echo_info "Mode:                    ${mode}"
+  echo_info "Check deps:              ${CHECK_DEPS:-no}"
+  echo_info "Composer PHP constraint: ${composer_php_display}"
+  echo_info "Scan dirs:               ${SCAN_DIRS[*]}"
+  echo_info "Standards:               ${PHPCS_STANDARDS}"
   echo ""
 }
 
@@ -210,12 +217,21 @@ run_check() {
 
   local scan_dirs=("${SCAN_DIRS[@]}")
 
+  local php_constraint_fails=0
+  local php_constraint_value=""
+  if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ -f composer.json ]; then
+    php_constraint_value=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
+    if [ -n "$php_constraint_value" ] && ! satisfies_php_constraint "$version" "$php_constraint_value"; then
+      php_constraint_fails=1
+    fi
+  fi
+
   if [ -n "$CHECK_DEPS" ]; then
     rm -rf vendor composer.lock
 
     jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
 
-    if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ]; then
+    if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ "$php_constraint_fails" -eq 0 ]; then
       composer config platform.php "$version"
     fi
 
@@ -267,39 +283,50 @@ run_check() {
     if [ "$SHOW_DEPS" -eq 1 ] && [ -f composer.lock ]; then
       local total_pkgs
       total_pkgs=$(jq '.packages | length' composer.lock 2>/dev/null || echo 0)
-      echo_info "Dependencies (${total_pkgs} packages):"
-      echo ""
-      while IFS=$'\t' read -r pkg_name pkg_version; do
-        local vendor_path="vendor/${pkg_name}"
-        local is_ignored=0
-        local is_trusted=0
-        local pkg_php_req=""
-        for i in "${!incompatible_ignores[@]}"; do
-          if [ "${incompatible_ignores[$i]}" = "$vendor_path" ]; then
-            is_ignored=1
-            pkg_php_req="${incompatible_constraints[$i]}"
-            break
-          fi
-        done
-        if [ "$is_ignored" -eq 0 ]; then
-          for trusted_path in "${trusted_ignores[@]}"; do
-            if [ "$trusted_path" = "$vendor_path" ]; then
-              is_trusted=1
+      if [ "$total_pkgs" -eq 0 ]; then
+        echo_info "No dependencies."
+        echo ""
+      else
+        echo_info "Dependencies (${total_pkgs} packages):"
+        echo ""
+        while IFS=$'\t' read -r pkg_name pkg_version; do
+          local vendor_path="vendor/${pkg_name}"
+          local is_ignored=0
+          local is_trusted=0
+          local pkg_php_req=""
+          for i in "${!incompatible_ignores[@]}"; do
+            if [ "${incompatible_ignores[$i]}" = "$vendor_path" ]; then
+              is_ignored=1
+              pkg_php_req="${incompatible_constraints[$i]}"
               break
             fi
           done
-        fi
-        if [ "$is_ignored" -eq 1 ]; then
-          printf "    %-40s  %-14s  \033[33mignored\033[0m (requires PHP %s)\n" "$pkg_name" "$pkg_version" "$pkg_php_req"
-        elif [ "$is_trusted" -eq 1 ]; then
-          printf "    %-40s  %-14s  \033[36mtrusted\033[0m\n" "$pkg_name" "$pkg_version"
-        else
-          printf "    %-40s  %-14s  \033[32mchecked\033[0m\n" "$pkg_name" "$pkg_version"
-        fi
-      done < <(jq -r '.packages[] | [.name, .version] | @tsv' composer.lock 2>/dev/null | sort)
-      echo ""
+          if [ "$is_ignored" -eq 0 ]; then
+            for trusted_path in "${trusted_ignores[@]}"; do
+              if [ "$trusted_path" = "$vendor_path" ]; then
+                is_trusted=1
+                break
+              fi
+            done
+          fi
+          if [ "$is_ignored" -eq 1 ]; then
+            printf "    %-40s  %-14s  \033[33mignored\033[0m (requires PHP %s)\n" "$pkg_name" "$pkg_version" "$pkg_php_req"
+          elif [ "$is_trusted" -eq 1 ]; then
+            printf "    %-40s  %-14s  \033[36mtrusted\033[0m\n" "$pkg_name" "$pkg_version"
+          else
+            printf "    %-40s  %-14s  \033[32mchecked\033[0m\n" "$pkg_name" "$pkg_version"
+          fi
+        done < <(jq -r '.packages[] | [.name, .version] | @tsv' composer.lock 2>/dev/null | sort)
+        echo ""
+      fi
     fi
 
+  fi
+
+  if [ "$php_constraint_fails" -eq 1 ]; then
+    echo_error "PHP $version does not satisfy the project's requirement: $php_constraint_value"
+    echo_note "Use --ignore-composer-php-version to bypass this check."
+    return 1
   fi
 
   echo ""
@@ -527,16 +554,6 @@ if [ "$MIN_MODE" -eq 0 ]; then
     resolve_php_version
   fi
 
-  if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ -f composer.json ]; then
-    constraint=$(jq -r '.require.php // empty' composer.json 2>/dev/null || true)
-    if [ -n "$constraint" ] && ! satisfies_php_constraint "$PHP_VERSION" "$constraint"; then
-      echo_error "PHP $PHP_VERSION does not satisfy the project's requirement: $constraint"
-      echo_note "Use --ignore-composer-php-version to bypass this check."
-      rm -rf "$TMP_DIR"
-      exit 1
-    fi
-  fi
-
   print_config "compatibility check" "$PHP_VERSION"
 
   run_check "$PHP_VERSION" 1 || true
@@ -548,8 +565,6 @@ fi
 # -----------------------
 # MIN MODE
 # -----------------------
-echo_info "Finding minimum PHP version..."
-
 EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
 
 php_constraint=""
@@ -570,6 +585,8 @@ FROM_PHP_VERSION="${FROM_PHP_VERSION:-${PHP_VERSIONS[0]}}"
 FILTERED_PHP_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
 
 print_config "find minimum PHP version" "${FROM_PHP_VERSION} – ${MAX_PHP_VERSION}"
+
+echo_info "Finding minimum PHP version..."
 
 ignore_hint="Use --ignore-composer-php-version to scan without constraint filtering."
 
