@@ -1,0 +1,10 @@
+{
+    "name": "fixture/installed-dependencies",
+    "require": {
+        "php": ">=7.4",
+        "fixture/runtime": "1.0.0"
+    },
+    "require-dev": {
+        "fixture/dev": "1.0.0"
+    }
+}

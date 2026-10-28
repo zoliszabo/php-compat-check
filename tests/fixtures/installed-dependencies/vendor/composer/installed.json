@@ -1,0 +1,22 @@
+{
+    "packages": [
+        {
+            "name": "fixture/runtime",
+            "version": "1.0.0",
+            "type": "library",
+            "require": {
+                "php": ">=8.0"
+            }
+        },
+        {
+            "name": "fixture/dev",
+            "version": "1.0.0",
+            "type": "library",
+            "require": {
+                "php": ">=8.2"
+            }
+        }
+    ],
+    "dev": true,
+    "dev-package-names": ["fixture/dev"]
+}

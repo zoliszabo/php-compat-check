@@ -1,0 +1,12 @@
+{
+    "name": "fixture/missing-dependencies",
+    "require": {
+        "php": ">=7.4",
+        "fixture/runtime": "1.0.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Fixture\\": "src/"
+        }
+    }
+}

@@ -232,6 +232,20 @@ python3 -m unittest discover -s tests -v
 
 The tests stub Docker, network access, and PHP_CodeSniffer while using real PHP and Composer semver. If Composer is not installed as a PHAR, set `COMPOSER_AUTOLOAD` to an autoloader that provides `Composer\Semver\Semver`.
 
+Permanent minimal projects in [tests/fixtures](tests/fixtures/README.md) also exercise the real Docker image and PHPCompatibility:
+
+```bash
+make test-integration
+```
+
+This builds the current image and runs the fixture tests using Python 3, Bash, and Docker. The tests cover actual PHP syntax compatibility, minimum-version detection, shallow/full dependency scans, development dependency exclusion, missing dependencies, and local paths with spaces. Fixture dependencies and Composer metadata are hand-written and included in the repository, so the fixture checks need no dependency downloads. Each fixture is copied into a temporary directory, mounted read-only through the real CLI wrapper, and checked for file changes after each test.
+
+To reuse an image already built from the current source:
+
+```bash
+PHP_COMPAT_CHECK_IMAGE=php-compat-check:dev python3 -m unittest discover -s tests/integration -v
+```
+
 ## Requirements
 
 - Docker

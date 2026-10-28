@@ -1,4 +1,4 @@
-.PHONY: install uninstall build run test
+.PHONY: install uninstall build run test test-integration
 
 INSTALL_DIR ?= /usr/local/bin
 SCRIPT_SOURCE = bin/php-compat-check
@@ -21,3 +21,6 @@ run: build
 
 test:
 	python3 -m unittest discover -s tests -v
+
+test-integration: build
+	PHP_COMPAT_CHECK_IMAGE=$(DEV_IMAGE) python3 -m unittest discover -s tests/integration -v
