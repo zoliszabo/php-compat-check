@@ -134,56 +134,86 @@ filter_from_version() {
   echo "${out[@]}"
 }
 
-collect_compatible_vendor_ignores() {
+# Read metadata rather than loading the project's autoloader or executing its code.
+collect_vendor_ignores() {
   local target_version="$1"
-  local manifests=()
-
-  for manifest in vendor/*/*/composer.json; do
-    [ -f "$manifest" ] && manifests+=("$manifest")
-  done
-
-  [ ${#manifests[@]} -eq 0 ] && return
-
-  local manifests_json
-  manifests_json=$(printf '"%s",' "${manifests[@]}" | sed 's/,$//')
-
-  php -r "
-    require '$COMPOSER_HOME/vendor/autoload.php';
-    use Composer\Semver\Semver;
-    foreach ([$manifests_json] as \$manifest) {
-      \$data = json_decode(file_get_contents(\$manifest), true);
-      \$constraint = \$data['require']['php'] ?? '';
-      if (\$constraint !== '' && Semver::satisfies('$target_version', \$constraint)) {
-        echo dirname(\$manifest) . PHP_EOL;
-      }
+  local compatible="$2"
+  php -r '
+    require $argv[1] . "/vendor/autoload.php";
+    foreach (json_decode(stream_get_contents(STDIN), true) as $package) {
+        $constraint = $package["require"]["php"] ?? "";
+        if ($constraint !== "" && Composer\Semver\Semver::satisfies($argv[2], $constraint) === ($argv[3] === "1")) {
+            echo "vendor/" . $package["name"] . PHP_EOL;
+        }
     }
-  "
+  ' "$COMPOSER_HOME" "$target_version" "$compatible" <<< "$DEPENDENCY_PACKAGES"
 }
 
-collect_incompatible_vendor_ignores() {
-  local target_version="$1"
-  local manifests=()
+load_local_dependencies() {
+  DEPENDENCY_PACKAGES='[]'
+  LOCAL_DEV_PACKAGES=()
+  if [ ! -f vendor/composer/installed.json ]; then
+    if [ -f composer.json ] && jq -e '
+      .require // {} | keys | any(test("^[^/]+/[^/]+$"))
+    ' composer.json >/dev/null; then
+      echo_error "Installed dependency metadata not found. Run Composer install in the local project first."
+      return 1
+    fi
+    return 0
+  fi
 
-  for manifest in vendor/*/*/composer.json; do
-    [ -f "$manifest" ] && manifests+=("$manifest")
-  done
+  # Composer 2 identifies dev-only packages; Composer 1 can use the lock file.
+  local installed_packages
+  if ! installed_packages=$(jq -ce '
+    if type == "array" then .
+    elif (.packages | type) == "array" then .packages
+    else error("Invalid installed package metadata") end
+  ' vendor/composer/installed.json); then
+    echo_error "Could not read installed dependency metadata. Run Composer install in the local project first."
+    return 1
+  fi
+  if jq -e 'type == "object"' vendor/composer/installed.json >/dev/null; then
+    mapfile -t LOCAL_DEV_PACKAGES < <(jq -r '.["dev-package-names"] // [] | .[]' vendor/composer/installed.json)
+  elif [ -f composer.lock ]; then
+    mapfile -t LOCAL_DEV_PACKAGES < <(jq -r '.["packages-dev"] // [] | .[].name' composer.lock)
+  fi
+  local dev_json
+  dev_json=$(printf '%s\n' "${LOCAL_DEV_PACKAGES[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  DEPENDENCY_PACKAGES=$(jq -c --argjson dev "$dev_json" '
+    [.[] | select(.name as $name | $dev | index($name) | not)]
+  ' <<< "$installed_packages")
 
-  [ ${#manifests[@]} -eq 0 ] && return
-
-  local manifests_json
-  manifests_json=$(printf '"%s",' "${manifests[@]}" | sed 's/,$//')
-
-  php -r "
-    require '$COMPOSER_HOME/vendor/autoload.php';
-    use Composer\Semver\Semver;
-    foreach ([$manifests_json] as \$manifest) {
-      \$data = json_decode(file_get_contents(\$manifest), true);
-      \$constraint = \$data['require']['php'] ?? '';
-      if (\$constraint !== '' && !Semver::satisfies('$target_version', \$constraint)) {
-        echo dirname(\$manifest) . PHP_EOL;
-      }
+  if ! php -r '
+    $root = is_file("composer.json") ? json_decode(file_get_contents("composer.json"), true) : [];
+    $packages = json_decode(stream_get_contents(STDIN), true);
+    $available = [];
+    foreach (array_merge([$root], $packages) as $package) {
+        if (isset($package["name"])) $available[$package["name"]] = true;
+        foreach (["provide", "replace"] as $key) {
+            foreach ($package[$key] ?? [] as $name => $_) $available[$name] = true;
+        }
     }
-  "
+    $missing = [];
+    foreach (array_merge([$root], $packages) as $package) {
+        foreach ($package["require"] ?? [] as $name => $_) {
+            if (str_contains($name, "/") && !isset($available[$name])) $missing[$name] = true;
+        }
+    }
+    foreach ($missing as $name => $_) echo "Missing installed dependency: $name" . PHP_EOL;
+    exit($missing ? 1 : 0);
+  ' <<< "$DEPENDENCY_PACKAGES"; then
+    echo_error "Dependencies are incomplete. Run Composer install in the local project first."
+    return 1
+  fi
+
+  local missing=0 package
+  while IFS= read -r package; do
+    if [ ! -d "vendor/$package" ]; then
+      echo_error "Installed dependency directory missing: vendor/$package. Run Composer install in the local project first."
+      missing=1
+    fi
+  done < <(jq -r '.[] | select(.type != "metapackage") | .name' <<< "$DEPENDENCY_PACKAGES")
+  [ "$missing" -eq 0 ]
 }
 
 print_config() {
@@ -199,7 +229,7 @@ print_config() {
   [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 1 ] && [ -n "$composer_php" ] && composer_php_display="${composer_php} (ignored)"
 
   echo ""
-  echo_info "Package:                 ${ORIGINAL_REPO} (${version_display})"
+  echo_info "Source:                  ${ORIGINAL_REPO} (${version_display})"
   echo_info "PHP:                     ${php_info}"
   echo_info "Mode:                    ${mode}"
   echo_info "Check deps:              ${CHECK_DEPS:-no}"
@@ -216,6 +246,18 @@ run_check() {
   local phpcs_ignore="*/vendor/composer/*,*/vendor/autoload.php,*/polyfill-*/bootstrap*.php"
 
   local scan_dirs=("${SCAN_DIRS[@]}")
+  local dependency_constraint_fails=0
+  PHPCS_STANDARDS="$BASE_PHPCS_STANDARDS"
+  if [ "$SOURCE_TYPE" = "local" ]; then
+    if [ -z "$CHECK_DEPS" ]; then
+      phpcs_ignore="${phpcs_ignore},*/vendor/*"
+    else
+      local dev_package
+      for dev_package in "${LOCAL_DEV_PACKAGES[@]}"; do
+        phpcs_ignore="${phpcs_ignore},*/vendor/${dev_package}/*"
+      done
+    fi
+  fi
 
   local php_constraint_fails=0
   local php_constraint_value=""
@@ -227,51 +269,57 @@ run_check() {
   fi
 
   if [ -n "$CHECK_DEPS" ]; then
-    rm -rf vendor composer.lock
+    if [ "$SOURCE_TYPE" != "local" ]; then
+      rm -rf vendor composer.lock
 
-    jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
+      jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
 
-    if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ "$php_constraint_fails" -eq 0 ]; then
-      composer config platform.php "$version"
-    fi
-
-    local composer_output
-    if ! composer_output=$(composer install \
-      --no-interaction \
-      --no-progress \
-      --prefer-dist \
-      --no-scripts 2>&1); then
-      echo_error "Composer failed"
-      echo "$composer_output"
-      return 1
-    fi
-
-    if [ -f composer.lock ]; then
-      local lock_packages
-      lock_packages=$(jq -r '.packages[].name' composer.lock 2>/dev/null || true)
-      mapfile -t extra_standards < <(detect_polyfill_standards "$lock_packages")
-      if [ ${#extra_standards[@]} -gt 0 ]; then
-        PHPCS_STANDARDS="${PHPCS_STANDARDS},$(IFS=,; echo "${extra_standards[*]}")"
-        echo_info "Polyfill standards: ${extra_standards[*]}"
+      if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ "$php_constraint_fails" -eq 0 ]; then
+        composer config platform.php "$version"
       fi
+
+      local composer_output
+      if ! composer_output=$(composer install \
+        --no-interaction \
+        --no-progress \
+        --prefer-dist \
+        --no-scripts 2>&1); then
+        echo_error "Composer failed"
+        echo "$composer_output"
+        return 1
+      fi
+      DEPENDENCY_PACKAGES=$(jq -c '.packages // []' composer.lock)
+    fi
+
+    local lock_packages
+    lock_packages=$(jq -r '.[].name' <<< "$DEPENDENCY_PACKAGES")
+    mapfile -t extra_standards < <(detect_polyfill_standards "$lock_packages")
+    if [ ${#extra_standards[@]} -gt 0 ]; then
+      PHPCS_STANDARDS="${PHPCS_STANDARDS},$(IFS=,; echo "${extra_standards[*]}")"
+      echo_info "Polyfill standards: ${extra_standards[*]}"
     fi
 
     local incompatible_ignores=()
     local incompatible_constraints=()
-    mapfile -t incompatible_ignores < <(collect_incompatible_vendor_ignores "$version")
+    mapfile -t incompatible_ignores < <(collect_vendor_ignores "$version" 0)
     if [ ${#incompatible_ignores[@]} -gt 0 ]; then
       for incomp_path in "${incompatible_ignores[@]}"; do
         local pkg_constraint
-        pkg_constraint=$(jq -r '.require.php // ""' "${incomp_path}/composer.json" 2>/dev/null || true)
+        pkg_constraint=$(jq -r --arg name "${incomp_path#vendor/}" '.[] | select(.name == $name) | .require.php // ""' <<< "$DEPENDENCY_PACKAGES")
         incompatible_constraints+=("$pkg_constraint")
-        echo_warning "Skipping ${incomp_path#vendor/} — requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
+        if [ "$SOURCE_TYPE" = "local" ]; then
+          echo_error "Installed dependency ${incomp_path#vendor/} requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
+          dependency_constraint_fails=1
+        else
+          echo_warning "Skipping ${incomp_path#vendor/} — requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
+        fi
         phpcs_ignore="${phpcs_ignore},*/${incomp_path}/*"
       done
     fi
 
     local trusted_ignores=()
     if [ "$CHECK_DEPS" != "full" ]; then
-      mapfile -t trusted_ignores < <(collect_compatible_vendor_ignores "$version")
+      mapfile -t trusted_ignores < <(collect_vendor_ignores "$version" 1)
       for trusted_path in "${trusted_ignores[@]}"; do
         phpcs_ignore="${phpcs_ignore},*/${trusted_path}/*"
       done
@@ -280,9 +328,9 @@ run_check() {
       fi
     fi
 
-    if [ "$SHOW_DEPS" -eq 1 ] && [ -f composer.lock ]; then
+    if [ "$SHOW_DEPS" -eq 1 ]; then
       local total_pkgs
-      total_pkgs=$(jq '.packages | length' composer.lock 2>/dev/null || echo 0)
+      total_pkgs=$(jq 'length' <<< "$DEPENDENCY_PACKAGES")
       if [ "$total_pkgs" -eq 0 ]; then
         echo_info "No dependencies."
         echo ""
@@ -310,13 +358,15 @@ run_check() {
             done
           fi
           if [ "$is_ignored" -eq 1 ]; then
-            printf "    %-40s  %-14s  \033[33mignored\033[0m (requires PHP %s)\n" "$pkg_name" "$pkg_version" "$pkg_php_req"
+            local status="ignored"
+            [ "$SOURCE_TYPE" = "local" ] && status="incompatible"
+            printf "    %-40s  %-14s  \033[33m%s\033[0m (requires PHP %s)\n" "$pkg_name" "$pkg_version" "$status" "$pkg_php_req"
           elif [ "$is_trusted" -eq 1 ]; then
             printf "    %-40s  %-14s  \033[36mtrusted\033[0m\n" "$pkg_name" "$pkg_version"
           else
             printf "    %-40s  %-14s  \033[32mchecked\033[0m\n" "$pkg_name" "$pkg_version"
           fi
-        done < <(jq -r '.packages[] | [.name, .version] | @tsv' composer.lock 2>/dev/null | sort)
+        done < <(jq -r '.[] | [.name, .version] | @tsv' <<< "$DEPENDENCY_PACKAGES" | sort)
         echo ""
       fi
     fi
@@ -330,6 +380,11 @@ run_check() {
   fi
 
   echo ""
+  if [ "$dependency_constraint_fails" -eq 1 ]; then
+    echo_error "Not compatible with PHP $version (installed dependency requirements)"
+    return 1
+  fi
+
   echo_info "Testing PHP $version..."
   echo ""
 
@@ -338,7 +393,7 @@ run_check() {
     --standard="$PHPCS_STANDARDS"
     --extensions=php
     --ignore="$phpcs_ignore"
-    --basepath="$TMP_DIR"
+    --basepath="$PROJECT_DIR"
     --runtime-set testVersion "$target"
   )
 
@@ -455,8 +510,18 @@ for arg in "$@"; do
   esac
 done
 
-# Extract version from vendor/package:constraint syntax
-if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+:.+$ ]]; then
+ORIGINAL_REPO="$REPO"
+SOURCE_TYPE=""
+case "$REPO" in
+  package:*) SOURCE_TYPE="package"; REPO="${REPO#package:}" ;;
+  repository:*) SOURCE_TYPE="repository"; REPO="${REPO#repository:}" ;;
+  repo:*) SOURCE_TYPE="repository"; REPO="${REPO#repo:}" ;;
+  local:*) SOURCE_TYPE="local"; REPO="${REPO#local:}" ;;
+  .|..|./*|../*|/*) SOURCE_TYPE="local" ;;
+esac
+
+# Only package sources interpret a colon as a version constraint.
+if [ "$SOURCE_TYPE" != "local" ] && [ "$SOURCE_TYPE" != "repository" ] && [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+:.+$ ]]; then
   COLON_VERSION="${REPO#*:}"
   REPO="${REPO%%:*}"
   if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$COLON_VERSION" ]; then
@@ -468,15 +533,38 @@ fi
 
 if [ -z "$REPO" ]; then
   echo "Usage:"
-  echo "  php-compat-check <repo> <php-version> [--check-deps[=shallow|full]]"
-  echo "  php-compat-check <repo> --min-php-version [--from-php-version=7.4]"
+  echo "  php-compat-check <source> <php-version> [--check-deps[=shallow|full]]"
+  echo "  php-compat-check <source> --min-php-version [--from-php-version=7.4]"
+  echo "Sources: vendor/package[:version], Git URL, ., ./path, /path,"
+  echo "         package:<package>, repo:<url>, repository:<url>, local:<path>"
   exit 1
 fi
 
-ORIGINAL_REPO="$REPO"
+if [ -z "$SOURCE_TYPE" ]; then
+  if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+    SOURCE_TYPE="package"
+  else
+    SOURCE_TYPE="repository"
+  fi
+fi
+
+if [ "$SOURCE_TYPE" = "local" ]; then
+  if [ ! -d "$REPO" ]; then
+    echo_error "Local directory not found: $REPO"
+    exit 1
+  fi
+  if [ -n "$REPO_VERSION" ]; then
+    echo_error "--version is not supported for local projects; the current files are scanned."
+    exit 1
+  fi
+fi
 
 # Resolve Packagist shorthand (vendor/package) to actual repository URL
-if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+if [ "$SOURCE_TYPE" = "package" ]; then
+  if [[ ! "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+    echo_error "Invalid Packagist package: $REPO"
+    exit 1
+  fi
   echo_info "Resolving Packagist package: $REPO..."
   PACKAGIST_JSON=$(curl -sf "https://packagist.org/packages/${REPO}.json" 2>/dev/null || true)
   if [ -z "$PACKAGIST_JSON" ]; then
@@ -507,32 +595,44 @@ if [[ "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
   fi
 fi
 
-TMP_DIR=$(mktemp -d)
-
-CLONE_ARGS="--depth=1"
-if [ -n "$REPO_VERSION" ]; then
-  echo_info "Cloning repository at $REPO_VERSION..."
-  GIT_REF="${REPO_VERSION#dev-}"
-  CLONE_ARGS="$CLONE_ARGS --branch $GIT_REF"
+TMP_DIR=""
+if [ "$SOURCE_TYPE" = "local" ]; then
+  PROJECT_DIR=$(cd -- "$REPO" && pwd -P)
+  CLONED_VERSION="local files"
+  CLONED_HASH=""
 else
-  echo_info "Cloning repository..."
+  TMP_DIR=$(mktemp -d)
+  trap 'rm -rf -- "$TMP_DIR"' EXIT
+  PROJECT_DIR="$TMP_DIR"
+  CLONE_ARGS=(--depth=1)
+  if [ -n "$REPO_VERSION" ]; then
+    echo_info "Cloning repository at $REPO_VERSION..."
+    CLONE_ARGS+=(--branch "${REPO_VERSION#dev-}")
+  else
+    echo_info "Cloning repository..."
+  fi
+  if ! git clone "${CLONE_ARGS[@]}" "$REPO" "$PROJECT_DIR" >/dev/null 2>&1; then
+    echo_error "Failed to clone repository: $REPO"
+    exit 1
+  fi
+  CLONED_VERSION=$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null || true)
+  if [ -z "$CLONED_VERSION" ]; then
+    branch=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    CLONED_VERSION="dev-${branch:-unknown}"
+  fi
+  CLONED_HASH=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)
 fi
-if ! git clone $CLONE_ARGS "$REPO" "$TMP_DIR" >/dev/null 2>&1; then
-  echo_error "Failed to clone repository: $REPO"
-  rm -rf "$TMP_DIR"
-  exit 1
-fi
-CLONED_VERSION=$(git -C "$TMP_DIR" describe --tags --exact-match 2>/dev/null || true)
-if [ -z "$CLONED_VERSION" ]; then
-  branch=$(git -C "$TMP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-  CLONED_VERSION="dev-${branch:-unknown}"
-fi
-CLONED_HASH=$(git -C "$TMP_DIR" rev-parse --short HEAD 2>/dev/null || true)
-cd "$TMP_DIR"
+cd "$PROJECT_DIR"
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
 fi
-if [ -n "$CHECK_DEPS" ] && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
+DEPENDENCY_PACKAGES='[]'
+LOCAL_DEV_PACKAGES=()
+if [ "$SOURCE_TYPE" = "local" ] && [ -n "$CHECK_DEPS" ]; then
+  load_local_dependencies || exit 1
+  echo_info "Using installed local dependencies; no dependencies will be installed or updated."
+fi
+if [ -n "$CHECK_DEPS" ] && { [ "$SOURCE_TYPE" != "local" ] || [ -d vendor ]; } && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
   SCAN_DIRS+=("vendor")
 fi
 
@@ -545,6 +645,8 @@ if [ -z "$CHECK_DEPS" ] && [ -f composer.json ]; then
   fi
 fi
 
+BASE_PHPCS_STANDARDS="$PHPCS_STANDARDS"
+
 # -----------------------
 # NORMAL MODE
 # -----------------------
@@ -556,9 +658,13 @@ if [ "$MIN_MODE" -eq 0 ]; then
 
   print_config "compatibility check" "$PHP_VERSION"
 
-  run_check "$PHP_VERSION" 1 || true
+  result=0
+  run_check "$PHP_VERSION" 1 || result=$?
 
-  rm -rf "$TMP_DIR"
+  # Keep the historical remote exit behavior; local checks return their result.
+  if [ "$SOURCE_TYPE" = "local" ]; then
+    exit "$result"
+  fi
   exit 0
 fi
 
@@ -600,7 +706,6 @@ for v in "${FILTERED_PHP_VERSIONS[@]}"; do
     if [ -n "$php_constraint" ] && { [ "$v" = "$constraint_min" ] || [ "$v" = "$EXPLICIT_FROM_PHP_VERSION" ]; }; then
       echo_note "$ignore_hint"
     fi
-    rm -rf "$TMP_DIR"
     exit 0
   fi
 done
@@ -611,5 +716,4 @@ if [ -n "$php_constraint" ]; then
   echo "Note: $ignore_hint"
 fi
 
-rm -rf "$TMP_DIR"
 exit 1

@@ -17,4 +17,4 @@ build:
 	docker build -t $(DEV_IMAGE) ./docker
 
 run: build
-	docker run --rm $(DEV_IMAGE) php-compat-check $(ARGS)
+	PHP_COMPAT_CHECK_IMAGE=$(DEV_IMAGE) bash bin/php-compat-check $(ARGS)

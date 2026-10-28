@@ -9,7 +9,8 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 - Check compatibility against a specific PHP version
 - Automatically detect the minimum supported PHP version
 - Optional dependency-aware analysis using Composer
-- Accepts a Git repository URL or a Packagist package name (`vendor/package[:version]`)
+- Accepts a local directory, Git repository URL, or Packagist package name (`vendor/package[:version]`)
+- Checks local working files and installed dependencies without modifying the project
 - Automatically resolves scan directories from `composer.json` autoload configuration
 - Auto-detects polyfill libraries and suppresses false positives accordingly
 - Runs in a Docker container for consistent results
@@ -20,10 +21,23 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 ### Basic compatibility check
 
 ```bash
-php-compat-check <repo> <php-version>
+php-compat-check <source> <php-version>
 ```
 
-The `<repo>` argument accepts a Git URL or a Packagist package name, with an optional version:
+The `<source>` argument is resolved automatically, or can have an explicit prefix:
+
+| Source | Interpretation |
+|--------|----------------|
+| `.`, `..`, `./path`, `../path`, `/absolute/path` | Local directory |
+| `vendor/package[:version]` | Packagist package, optionally with a version constraint |
+| `http://...`, `https://...`, Git SSH URLs | Git repository |
+| `local:<path>` | Explicit local directory |
+| `package:vendor/package[:version]` | Explicit Packagist package |
+| `repo:<url>`, `repository:<url>` | Explicit Git repository |
+
+Explicit prefixes take precedence. An unprefixed `vendor/package` always means a Packagist package, even if that directory exists locally. Use `./vendor/package` or `local:vendor/package` to select the directory.
+
+Existing package and repository commands continue to work:
 
 ```bash
 php-compat-check https://github.com/vendor/package 8.1
@@ -33,10 +47,31 @@ php-compat-check vendor/package:dev-main 8.1
 php-compat-check https://github.com/vendor/package 8.1 --version=v6.0.2
 ```
 
+### Check a local project
+
+```bash
+# Current directory
+php-compat-check . 8.1
+
+# Relative or absolute directory (quote paths containing spaces)
+php-compat-check ../my-project 8.1
+php-compat-check "local:/path/to/my project" 8.1
+
+# Find the minimum version using the current working files
+php-compat-check . --min-php-version
+
+# Include dependencies already installed in vendor/
+php-compat-check . 8.1 --check-deps=full --show-deps
+```
+
+Local projects are mounted read-only and scanned directly, including uncommitted and untracked files within the scan directories. No Git repository is required. The tool never installs or updates local dependencies, and leaves `composer.json`, `composer.lock`, and `vendor/` unchanged. `--version` applies only to remote sources; local checks always use the current files.
+
+Without `--check-deps`, `vendor/` is excluded. With `--check-deps`, installed production dependencies are read from `vendor/composer/installed.json`; development-only packages are excluded. Shallow mode trusts compatible PHP requirements; full mode scans every installed production package. Installed dependencies whose PHP requirement excludes the target make the check fail, including during minimum-version detection. Missing dependencies produce an error asking you to run Composer install in the project first. Local dependency checks inspect the installed set; they do not resolve alternative dependency versions for each PHP target.
+
 ### Find minimum supported PHP version
 
 ```bash
-php-compat-check <repo> --min-php-version
+php-compat-check <source> --min-php-version
 ```
 
 Scans versions that satisfy the `require.php` constraint declared in `composer.json`. Defaults to scanning from `5.6` if no constraint is found.
@@ -46,10 +81,10 @@ If the found minimum equals the constraint's own minimum (or the explicitly prov
 ### Scanning dependencies
 
 ```bash
-php-compat-check <repo> <php-version> --check-deps
+php-compat-check <source> <php-version> --check-deps
 ```
 
-Installs non-dev Composer dependencies and includes them in the scan. Accepts an optional mode:
+For remote sources, installs non-dev Composer dependencies and includes them in the scan. For local sources, checks already-installed production dependencies without running Composer install. Accepts an optional mode:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -67,20 +102,20 @@ php-compat-check vendor/package 8.1 --check-deps=shallow
 php-compat-check vendor/package 8.1 --check-deps=full
 ```
 
-In shallow mode, packages that declare an incompatible `require.php` are always excluded from the scan (they wouldn't be installed by Composer either). Packages with no `require.php` are always scanned.
+For remote sources, packages that declare an incompatible `require.php` are always excluded from the scan (they wouldn't be installed by Composer either). For local sources, incompatible installed dependencies are reported as errors. Packages with no `require.php` are always scanned.
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `--check-deps[=shallow\|full]` | Install and scan Composer dependencies (non-dev only). Defaults to `shallow` when no value is given. |
+| `--check-deps[=shallow\|full]` | Check production dependencies: install them for remote sources, or use the installed set for local sources. Defaults to `shallow`. |
 | `--min-php-version` | Find the minimum compatible PHP version |
 | `--from-php-version=<version>` | Override the lower bound when using `--min-php-version` |
 | `--ignore-composer-php-version` | Ignore `require.php` from `composer.json` when determining the scan range, filtering versions, or setting the platform version |
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
-| `--show-deps` | Print a table of installed dependencies and their scan status (`checked`, `trusted`, or `ignored`) |
+| `--show-deps` | With `--check-deps`, print installed production dependencies and their scan status (`checked`, `trusted`, `ignored`, or locally `incompatible`) |
 | `--show-warnings` | Display PHPCompatibility warnings in addition to errors (warnings are hidden by default) |
-| `--version=<ref>` | Check out a specific version for URL repos (tag, branch, or `dev-main` style) |
+| `--version=<ref>` | Select a remote package/repository version (tag, branch, or `dev-main` style); unavailable for local sources |
 
 ### Examples
 
@@ -115,14 +150,14 @@ php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 
 ## How it works
 
-1. Resolves a Packagist package name to its repository URL if needed
-2. Clones the repository
+1. Resolves the source type from an explicit prefix or the package/URL/path syntax
+2. Resolves Packagist packages to Git URLs and clones remote repositories into a temporary directory; local directories are mounted read-only instead
 3. Detects scan directories from `composer.json` autoload (`psr-4`, `psr-0`, `classmap`, `files`); falls back to `.`
-4. When `--check-deps` is set: strips `require-dev` and `autoload-dev`, simulates the target PHP platform version, and installs non-dev dependencies
+4. When `--check-deps` is set: for remote sources, strips `require-dev` and `autoload-dev`, simulates the target PHP platform version, and installs non-dev dependencies; for local sources, reads installed production dependency metadata
 5. Validates the requested version (or scanned range) against `composer.json`'s `require.php` constraint using Composer's semver library, unless `--ignore-composer-php-version` is set
 6. Auto-detects polyfill libraries and applies the appropriate PHPCompatibility companion standards to suppress false positives:
    - Without `--check-deps`: reads `require` from `composer.json`
-   - With `--check-deps`: reads `composer.lock` after install to catch transitive polyfill dependencies
+   - With `--check-deps`: reads `composer.lock` after remote installation, or local installed metadata, to catch transitive polyfill dependencies
    - Supported: `symfony/polyfill-php*`, `paragonie/random_compat`, `paragonie/sodium_compat`, `ircmaxell/password-compat`
 7. In shallow mode, vendor packages whose `require.php` satisfies the target are trusted and excluded from the scan; packages with no `require.php` are always scanned
 8. Runs PHPCompatibility via PHP_CodeSniffer against the resolved directories, ignoring `vendor/composer/`, `vendor/autoload.php`, and polyfill version-gated bootstrap files (e.g. `bootstrap80.php`)
@@ -163,7 +198,13 @@ chmod +x /usr/local/bin/php-compat-check
 ### Option 3: Use Docker directly
 
 ```bash
-docker run --rm zoliszabo/php-compat-check <repo> <php-version>
+docker run --rm zoliszabo/php-compat-check php-compat-check <source> <php-version>
+```
+
+For a local project, mount it read-only and pass the container path:
+
+```bash
+docker run --rm -v "$PWD:/project:ro" zoliszabo/php-compat-check php-compat-check local:/project 8.1
 ```
 
 ## Development
@@ -178,6 +219,7 @@ make build
 make run ARGS="sebastian/diff 8.1"
 make run ARGS="sebastian/diff --min-php-version"
 make run ARGS="sebastian/diff 8.1 --check-deps"
+make run ARGS=". 8.1"
 ```
 
 `make run` always rebuilds the image before running, so you never test stale code.

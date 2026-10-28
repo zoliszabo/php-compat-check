@@ -2,8 +2,7 @@
 
 set -e
 
-IMAGE="zoliszabo/php-compat-check"
-VERSION="latest"
+IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:latest}"
 
 # Helper functions
 echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
@@ -17,22 +16,42 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # Handle upgrade flag
-if [[ "$1" == "--upgrade" ]]; then
-  echo_info "Pulling latest $IMAGE:$VERSION ..."
-  docker pull "$IMAGE:$VERSION"
+if [[ "${1:-}" == "--upgrade" ]]; then
+  echo_info "Pulling $IMAGE ..."
+  docker pull "$IMAGE"
   echo_success "Image updated successfully!"
   exit 0
 fi
 
+# Only explicit paths are local; vendor/package always remains Packagist shorthand.
+ARGS=("$@")
+MOUNT_ARGS=(-v "$(pwd):/work" -w /work)
+for i in "${!ARGS[@]}"; do
+  source_arg="${ARGS[$i]}"
+  [[ "$source_arg" == --* ]] && continue
+  case "$source_arg" in
+    local:*) local_path="${source_arg#local:}" ;;
+    .|..|./*|../*|/*) local_path="$source_arg" ;;
+    *) break ;;
+  esac
+  if [ -z "$local_path" ] || [ ! -d "$local_path" ]; then
+    echo_error "Local directory not found: $local_path"
+    exit 1
+  fi
+  local_path=$(cd -- "$local_path" && pwd -P)
+  MOUNT_ARGS=(-v "$local_path:/project:ro" -w /project)
+  ARGS[$i]="local:/project"
+  break
+done
+
 # Ensure image exists locally
-if ! docker image inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
-  echo_info "Image not found locally. Pulling $IMAGE:$VERSION ..."
-  docker pull "$IMAGE:$VERSION"
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo_info "Image not found locally. Pulling $IMAGE ..."
+  docker pull "$IMAGE"
 fi
 
-# Run container (pass-through CLI)
+# Local sources are mounted read-only, even when dependency checks are requested.
 exec docker run --rm \
-  -v "$(pwd)":/work \
-  -w /work \
-  "$IMAGE:$VERSION" \
-  php-compat-check "$@"
+  "${MOUNT_ARGS[@]}" \
+  "$IMAGE" \
+  php-compat-check "${ARGS[@]}"
