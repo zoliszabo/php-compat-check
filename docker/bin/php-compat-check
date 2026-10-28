@@ -2,6 +2,15 @@
 
 set -e
 
+SCRIPT_PATH=${BASH_SOURCE[0]}
+[[ "$SCRIPT_PATH" == */* ]] || SCRIPT_PATH="./$SCRIPT_PATH"
+SCRIPT_DIR=$(cd -- "${SCRIPT_PATH%/*}" && pwd)
+VERSION_FILE="$SCRIPT_DIR/../../VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+  VERSION_FILE="$SCRIPT_DIR/../share/php-compat-check/VERSION"
+fi
+IFS= read -r VERSION < "$VERSION_FILE"
+
 # Helper functions
 echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
@@ -465,6 +474,10 @@ SCAN_DIRS=()
 
 for arg in "$@"; do
   case $arg in
+    --version)
+      echo "php-compat-check $VERSION"
+      exit 0
+      ;;
     --check-deps)
       CHECK_DEPS="shallow"
       ;;
@@ -495,7 +508,19 @@ for arg in "$@"; do
     --scan-dirs=*)
       IFS=',' read -ra SCAN_DIRS <<< "${arg#*=}"
       ;;
-    --version=*)
+    --source-version=*|--version=*)
+      if [[ "$arg" == --version=* ]]; then
+        echo_warning "--version=<ref> is deprecated; use --source-version=<version> instead." >&2
+      fi
+      val="${arg#*=}"
+      if [ -z "$val" ]; then
+        echo_error "--source-version requires a non-empty version."
+        exit 1
+      fi
+      if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$val" ]; then
+        echo_error "Conflicting source versions: '$REPO_VERSION' and '$val'."
+        exit 1
+      fi
       REPO_VERSION="${arg#*=}"
       ;;
     -*)
@@ -527,7 +552,7 @@ if [ "$SOURCE_TYPE" != "local" ] && [ "$SOURCE_TYPE" != "repository" ] && [[ "$R
   COLON_VERSION="${REPO#*:}"
   REPO="${REPO%%:*}"
   if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$COLON_VERSION" ]; then
-    echo_error "Conflicting versions: ':' syntax specifies '$COLON_VERSION' but --version specifies '$REPO_VERSION'."
+    echo_error "Conflicting versions: ':' syntax specifies '$COLON_VERSION' but --source-version specifies '$REPO_VERSION'."
     exit 1
   fi
   REPO_VERSION="$COLON_VERSION"
@@ -537,6 +562,8 @@ if [ -z "$REPO" ]; then
   echo "Usage:"
   echo "  php-compat-check <source> <php-version> [--check-deps[=shallow|full]]"
   echo "  php-compat-check <source> --min-php-version [--from-php-version=7.4]"
+  echo "  php-compat-check --version"
+  echo "Remote source version: --source-version=<version> (deprecated alias: --version=<ref>)"
   echo "Sources: vendor/package[:version], Git URL, ., ./path, /path,"
   echo "         package:<package>, repo:<url>, repository:<url>, local:<path>"
   exit 1
@@ -556,7 +583,7 @@ if [ "$SOURCE_TYPE" = "local" ]; then
     exit 1
   fi
   if [ -n "$REPO_VERSION" ]; then
-    echo_error "--version is not supported for local projects; the current files are scanned."
+    echo_error "--source-version is not supported for local projects; the current files are scanned."
     exit 1
   fi
 fi

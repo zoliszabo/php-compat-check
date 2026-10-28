@@ -57,6 +57,50 @@ elif name == "phpcs":
 '''
 
 
+class VersionTest(unittest.TestCase):
+    def check_version(self, script, version):
+        for executable in (str(script), script.name):
+            for args in (("--version",), (".", "8.1", "--version")):
+                with self.subTest(script=script, executable=executable, args=args):
+                    result = subprocess.run(
+                        [shutil.which("bash"), executable, *args],
+                        cwd=script.parent, env=dict(os.environ, PATH=""), text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, "")
+                    self.assertEqual(result.stdout, f"php-compat-check {version}\n")
+
+    def test_checkout_executables_read_the_shared_version_without_dependencies(self):
+        for script in (WRAPPER, CHECKER):
+            self.check_version(script, (ROOT / "VERSION").read_text().strip())
+
+    def test_both_executables_follow_changes_to_the_shared_version(self):
+        with tempfile.TemporaryDirectory(prefix="php-compat-check version ") as directory:
+            checkout = Path(directory)
+            (checkout / "VERSION").write_text("9.8.7-test\n")
+            for script in (WRAPPER, CHECKER):
+                copied = checkout / script.relative_to(ROOT)
+                copied.parent.mkdir(parents=True)
+                shutil.copyfile(script, copied)
+                self.check_version(copied, "9.8.7-test")
+
+    def test_installed_executables_read_the_packaged_version(self):
+        with tempfile.TemporaryDirectory(prefix="php-compat-check install ") as directory:
+            prefix = Path(directory)
+            result = subprocess.run(
+                ["make", "install", f"INSTALL_DIR={prefix / 'bin'}"],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            version = (ROOT / "VERSION").read_text().strip()
+            self.assertEqual((prefix / "share/php-compat-check/VERSION").read_text().strip(),
+                             version)
+            installed = prefix / "bin/php-compat-check"
+            self.check_version(installed, version)
+            # Docker installs the checker with the same bin/share layout.
+            shutil.copyfile(CHECKER, installed)
+            self.check_version(installed, version)
+
+
 class CliTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="php-compat-check-test-")
@@ -132,7 +176,7 @@ class CliTest(unittest.TestCase):
 
     def test_unknown_options_fail_before_external_commands(self):
         for wrapper in (False, True):
-            for option in ("--version", "--unknown", "--unknown=value", "-v"):
+            for option in ("--source-version", "--unknown", "--unknown=value", "-v"):
                 for args in ((option,), ("--show-warnings", option, ".", "8.1"),
                              ("vendor/package", option),
                              ("https://example.test/repo", "8.1", option)):
@@ -141,6 +185,15 @@ class CliTest(unittest.TestCase):
                         self.assertEqual(result.returncode, 1, result.stdout)
                         self.assertIn(f"Unknown option: {option}", result.stdout)
                         self.assertFalse(self.log.exists(), result.stdout)
+
+    def test_wrapper_forwards_source_version_and_normalizes_deprecated_alias(self):
+        for option in ("--source-version=dev-main", "--version=dev-main"):
+            with self.subTest(option=option):
+                result = self.run_cli("https://example.test/repo", "8.1", option, wrapper=True)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.calls("docker")[-1]["args"][-1],
+                                 "--source-version=dev-main")
+                self.assertEqual("deprecated" in result.stdout, option.startswith("--version="))
 
     def test_wrapper_preserves_remote_arguments_and_image_override(self):
         (self.project / "vendor/package").mkdir(parents=True)
@@ -221,9 +274,11 @@ class CliTest(unittest.TestCase):
         result = self.run_cli(".", "8.1", "--check-deps")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("Missing installed dependency: vendor/missing", result.stdout)
-        result = self.run_cli(".", "8.1", "--version=v1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("--version is not supported", result.stdout)
+        for option in ("--source-version=v1", "--version=v1"):
+            with self.subTest(option=option):
+                result = self.run_cli(".", "8.1", option)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--source-version is not supported", result.stdout)
         self.assertEqual(self.calls("phpcs"), [])
 
     def test_local_project_without_dependencies_needs_no_vendor(self):
@@ -288,11 +343,38 @@ class CliTest(unittest.TestCase):
                        "git@example.test:repo", "repo:vendor/package"):
             with self.subTest(source=source):
                 before = len(self.calls("curl"))
-                result = self.run_cli(source, "8.1", "--version=dev-main")
+                result = self.run_cli(source, "8.1", "--source-version=dev-main")
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(len(self.calls("curl")), before)
                 clone = next(c for c in reversed(self.calls("git")) if c["args"][0] == "clone")
                 self.assertIn("main", clone["args"])
+
+    def test_source_version_and_deprecated_alias_select_package_versions(self):
+        for option in ("--source-version=^1.0", "--version=^1.0"):
+            with self.subTest(option=option):
+                result = self.run_cli("vendor/package", "8.1", option)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                clone = next(c for c in reversed(self.calls("git")) if c["args"][0] == "clone")
+                self.assertEqual(clone["args"][1:4], ["--depth=1", "--branch", "v1.2.0"])
+                self.assertEqual("deprecated" in result.stdout, option.startswith("--version="))
+        result = self.run_cli("https://example.test/repo", "8.1", "--version=dev-main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("deprecated", result.stdout)
+        clone = next(c for c in reversed(self.calls("git")) if c["args"][0] == "clone")
+        self.assertIn("main", clone["args"])
+
+    def test_empty_and_conflicting_source_versions_fail_before_external_commands(self):
+        for args in (("vendor/package", "--source-version="),
+                     ("vendor/package", "--version="),
+                     ("vendor/package:^1.0", "--source-version=^2.0"),
+                     ("vendor/package:^1.0", "--version=^2.0"),
+                     ("vendor/package", "--source-version=v1", "--version=v2"),
+                     ("vendor/package", "--version=v2", "--source-version=v1")):
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("[ERROR]", result.stdout)
+                self.assertFalse(self.log.exists(), result.stdout)
 
     def test_remote_dependency_install_changes_only_temporary_clone(self):
         self.env["TEST_PACKAGES"] = json.dumps([{"name": "vendor/library", "version": "1"}])

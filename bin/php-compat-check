@@ -2,18 +2,37 @@
 
 set -e
 
+SCRIPT_PATH=${BASH_SOURCE[0]}
+[[ "$SCRIPT_PATH" == */* ]] || SCRIPT_PATH="./$SCRIPT_PATH"
+SCRIPT_DIR=$(cd -- "${SCRIPT_PATH%/*}" && pwd)
+VERSION_FILE="$SCRIPT_DIR/../VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+  VERSION_FILE="$SCRIPT_DIR/../share/php-compat-check/VERSION"
+fi
+IFS= read -r VERSION < "$VERSION_FILE"
 IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:latest}"
 
 # Helper functions
 echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
+echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
 # Reject unknown options before invoking Docker, regardless of argument order.
-for arg in "$@"; do
+ARGS=("$@")
+for i in "${!ARGS[@]}"; do
+  arg="${ARGS[$i]}"
   case "$arg" in
+    --version)
+      echo "php-compat-check $VERSION"
+      exit 0
+      ;;
+    --version=*)
+      echo_warning "--version=<ref> is deprecated; use --source-version=<version> instead." >&2
+      ARGS[$i]="--source-version=${arg#*=}"
+      ;;
     --upgrade|--check-deps|--check-deps=*|--min-php-version|--from-php-version=*|\
-    --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--version=*) ;;
+    --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--source-version=*) ;;
     -*)
       echo_error "Unknown option: $arg"
       exit 1
@@ -36,7 +55,6 @@ if [[ "${1:-}" == "--upgrade" ]]; then
 fi
 
 # Only explicit paths are local; vendor/package always remains Packagist shorthand.
-ARGS=("$@")
 MOUNT_ARGS=(-v "$(pwd):/work" -w /work)
 for i in "${!ARGS[@]}"; do
   source_arg="${ARGS[$i]}"

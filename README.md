@@ -44,7 +44,7 @@ php-compat-check https://github.com/vendor/package 8.1
 php-compat-check vendor/package 8.1
 php-compat-check vendor/package:^6.0 8.1
 php-compat-check vendor/package:dev-main 8.1
-php-compat-check https://github.com/vendor/package 8.1 --version=v6.0.2
+php-compat-check https://github.com/vendor/package 8.1 --source-version=v6.0.2
 ```
 
 ### Check a local project
@@ -64,7 +64,7 @@ php-compat-check . --min-php-version
 php-compat-check . 8.1 --check-deps=full --show-deps
 ```
 
-Local projects are mounted read-only and scanned directly, including uncommitted and untracked files within the scan directories. No Git repository is required. The tool never installs or updates local dependencies, and leaves `composer.json`, `composer.lock`, and `vendor/` unchanged. `--version` applies only to remote sources; local checks always use the current files.
+Local projects are mounted read-only and scanned directly, including uncommitted and untracked files within the scan directories. No Git repository is required. The tool never installs or updates local dependencies, and leaves `composer.json`, `composer.lock`, and `vendor/` unchanged. `--source-version` applies only to remote sources; local checks always use the current files.
 
 Without `--check-deps`, `vendor/` is excluded. With `--check-deps`, installed production dependencies are read from `vendor/composer/installed.json`; development-only packages are excluded. Shallow mode trusts compatible PHP requirements; full mode scans every installed production package. Installed dependencies whose PHP requirement excludes the target make the check fail, including during minimum-version detection. Missing dependencies produce an error asking you to run Composer install in the project first. Local dependency checks inspect the installed set; they do not resolve alternative dependency versions for each PHP target.
 
@@ -115,9 +115,12 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
 | `--show-deps` | With `--check-deps`, print installed production dependencies and their scan status (`checked`, `trusted`, `ignored`, or locally `incompatible`) |
 | `--show-warnings` | Display PHPCompatibility warnings in addition to errors (warnings are hidden by default) |
-| `--version=<ref>` | Select a remote package/repository version (tag, branch, or `dev-main` style); unavailable for local sources |
+| `--source-version=<version>` | Select a remote package/repository version (package constraint, tag, branch, or `dev-main` style); unavailable for local sources |
+| `--version` | Print the executable's version and exit; works without Docker, Composer, or a source argument |
+| `--version=<ref>` | Deprecated alias for `--source-version=<version>`; emits a warning |
+| `--upgrade` | Pull the configured Docker image (default: `latest`); updates the checker image, while the local wrapper and version file are updated with `make install` |
 
-Unknown flags are rejected with an error.
+Unknown flags are rejected with an error. The Docker wrapper reports its own installed version with `--version`; when running the command directly inside an image, it reports that image's executable version.
 
 ### Examples
 
@@ -193,6 +196,7 @@ make uninstall
 ### Option 2: Manual installation
 
 ```bash
+install -D -m 644 VERSION /usr/local/share/php-compat-check/VERSION
 cp bin/php-compat-check /usr/local/bin/php-compat-check
 chmod +x /usr/local/bin/php-compat-check
 ```

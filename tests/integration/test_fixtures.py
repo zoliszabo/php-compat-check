@@ -51,6 +51,14 @@ class FixtureTest(unittest.TestCase):
         for text in excludes:
             self.assertNotIn(text, result.stdout)
 
+    def test_image_reports_the_shared_version(self):
+        result = subprocess.run(
+            ["docker", "run", "--rm", IMAGE, "php-compat-check", "--version"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout,
+                         f"php-compat-check {(ROOT / 'VERSION').read_text().strip()}\n")
+
     def test_local_paths_and_prefixes(self):
         self.use_fixture("php81")
         for source in (".", "local:.", "../project with spaces", str(self.project)):
