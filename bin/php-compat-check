@@ -9,6 +9,18 @@ echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 
+# Reject unknown options before invoking Docker, regardless of argument order.
+for arg in "$@"; do
+  case "$arg" in
+    --upgrade|--check-deps|--check-deps=*|--min-php-version|--from-php-version=*|\
+    --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--version=*) ;;
+    -*)
+      echo_error "Unknown option: $arg"
+      exit 1
+      ;;
+  esac
+done
+
 # Detect Docker
 if ! command -v docker >/dev/null 2>&1; then
   echo_error "Docker is not installed or not in PATH."

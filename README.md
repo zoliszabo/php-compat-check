@@ -117,6 +117,8 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--show-warnings` | Display PHPCompatibility warnings in addition to errors (warnings are hidden by default) |
 | `--version=<ref>` | Select a remote package/repository version (tag, branch, or `dev-main` style); unavailable for local sources |
 
+Unknown flags are rejected with an error.
+
 ### Examples
 
 ```bash

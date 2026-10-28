@@ -130,6 +130,18 @@ class CliTest(unittest.TestCase):
                 self.assertIn(f"{self.project}:/project:ro", args)
                 self.assertEqual(args[-3:], ["--show-warnings", "local:/project", "8.1"])
 
+    def test_unknown_options_fail_before_external_commands(self):
+        for wrapper in (False, True):
+            for option in ("--version", "--unknown", "--unknown=value", "-v"):
+                for args in ((option,), ("--show-warnings", option, ".", "8.1"),
+                             ("vendor/package", option),
+                             ("https://example.test/repo", "8.1", option)):
+                    with self.subTest(wrapper=wrapper, args=args):
+                        result = self.run_cli(*args, wrapper=wrapper)
+                        self.assertEqual(result.returncode, 1, result.stdout)
+                        self.assertIn(f"Unknown option: {option}", result.stdout)
+                        self.assertFalse(self.log.exists(), result.stdout)
+
     def test_wrapper_preserves_remote_arguments_and_image_override(self):
         (self.project / "vendor/package").mkdir(parents=True)
         self.env["PHP_COMPAT_CHECK_IMAGE"] = "php-compat-check:dev"

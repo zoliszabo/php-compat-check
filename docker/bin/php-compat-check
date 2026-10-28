@@ -96,8 +96,6 @@ detect_polyfill_standards() {
   [ ${#standards[@]} -gt 0 ] && printf '%s\n' "${standards[@]}"
 }
 
-COMPOSER_HOME=$(composer config --global home 2>/dev/null)
-
 satisfies_php_constraint() {
   local version="$1"
   local constraint="$2"
@@ -500,6 +498,10 @@ for arg in "$@"; do
     --version=*)
       REPO_VERSION="${arg#*=}"
       ;;
+    -*)
+      echo_error "Unknown option: $arg"
+      exit 1
+      ;;
     *)
       if [ -z "$REPO" ]; then
         REPO="$arg"
@@ -558,6 +560,8 @@ if [ "$SOURCE_TYPE" = "local" ]; then
     exit 1
   fi
 fi
+
+COMPOSER_HOME=$(composer config --global home 2>/dev/null)
 
 # Resolve Packagist shorthand (vendor/package) to actual repository URL
 if [ "$SOURCE_TYPE" = "package" ]; then
