@@ -34,6 +34,12 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           TAG=${TAG#v}
+          for script in bin/php-compat-check docker/bin/php-compat-check; do
+            if [ "$(bash "$script" --version)" != "php-compat-check $TAG" ]; then
+              echo "Version in $script does not match release tag $TAG" >&2
+              exit 1
+            fi
+          done
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
 
       - name: Build and push

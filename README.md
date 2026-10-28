@@ -252,6 +252,21 @@ To reuse an image already built from the current source:
 PHP_COMPAT_CHECK_IMAGE=php-compat-check:dev python3 -m unittest discover -s tests/integration -v
 ```
 
+### Versioning and releases
+
+Use [Semantic Versioning](https://semver.org/): patch releases for compatible fixes, minor releases for compatible features and deprecations, and major releases for breaking changes. Untagged development toward the next release uses a prerelease version such as `3.1.0-dev`.
+
+The root `VERSION` file is the single source of the version number. Both scripts read it directly in a checkout. Installation copies it to `share/php-compat-check/VERSION` beside the installation's `bin` directory, and Docker builds include it at `/usr/local/share/php-compat-check/VERSION`.
+
+To release, update the root `VERSION` file to the final version (for example, `3.1.0`), run the tests, and commit the version bump along with any release documentation. Tag that commit, so the tagged source already contains the correct release version:
+
+```bash
+git tag -a 3.1.0 -m "Release 3.1.0"
+git push origin 3.1.0
+```
+
+Pushing the tag triggers the Docker publishing workflow. It verifies that both executable versions match the tag before publishing the versioned image and `latest`. Tags with a leading `v` are also accepted. After releasing, bump `VERSION` to the next development version (for example, `3.1.1-dev`) in a new commit. Choose the next minor or major version instead when the planned changes call for it.
+
 ## Requirements
 
 - Docker
