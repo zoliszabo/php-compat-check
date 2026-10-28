@@ -57,6 +57,39 @@ elif name == "phpcs":
 '''
 
 
+class HelpTest(unittest.TestCase):
+    def check_help(self, script):
+        for args, status in ((("--help",), 0), (("-h",), 0),
+                             ((".", "8.1", "--help"), 0), ((), 1)):
+            with self.subTest(script=script, args=args):
+                result = subprocess.run(
+                    [shutil.which("bash"), str(script), *args],
+                    cwd=script.parent, env=dict(os.environ, PATH=""), text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(result.stdout, (ROOT / "HELP").read_text())
+                self.assertIn("Check PHP compatibility", result.stdout)
+                self.assertIn("Usage:", result.stdout)
+                self.assertIn("Examples:", result.stdout)
+
+    def test_checkout_help_works_without_external_dependencies(self):
+        for script in (WRAPPER, CHECKER):
+            self.check_help(script)
+
+    def test_installed_help_is_packaged_for_both_executables(self):
+        with tempfile.TemporaryDirectory(prefix="php-compat-check help ") as directory:
+            prefix = Path(directory)
+            result = subprocess.run(
+                ["make", "install", f"INSTALL_DIR={prefix / 'bin'}"],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = prefix / "bin/php-compat-check"
+            self.check_help(installed)
+            shutil.copyfile(CHECKER, installed)
+            self.check_help(installed)
+
+
 class VersionTest(unittest.TestCase):
     def check_version(self, script, version):
         for executable in (str(script), script.name):

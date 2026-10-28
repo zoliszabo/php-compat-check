@@ -8,11 +8,12 @@ DEV_IMAGE = php-compat-check:dev
 
 install:
 	@install -D -m 644 VERSION "$(VERSION_INSTALL_DIR)/VERSION"
+	@install -D -m 644 HELP "$(VERSION_INSTALL_DIR)/HELP"
 	@install -D -m 755 $(SCRIPT_SOURCE) "$(INSTALL_DIR)/$(SCRIPT_NAME)"
 	@echo "✓ $(SCRIPT_NAME) installed to $(INSTALL_DIR)/$(SCRIPT_NAME)"
 
 uninstall:
-	@rm -f "$(INSTALL_DIR)/$(SCRIPT_NAME)" "$(VERSION_INSTALL_DIR)/VERSION"
+	@rm -f "$(INSTALL_DIR)/$(SCRIPT_NAME)" "$(VERSION_INSTALL_DIR)/VERSION" "$(VERSION_INSTALL_DIR)/HELP"
 	@echo "✓ $(SCRIPT_NAME) uninstalled from $(INSTALL_DIR)"
 
 build:

@@ -18,11 +18,27 @@ echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
+print_help() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+  done < "${VERSION_FILE%/*}/HELP"
+}
+
+if [ "$#" -eq 0 ]; then
+  print_help
+  exit 1
+fi
+
 # Reject unknown options before invoking Docker, regardless of argument order.
 ARGS=("$@")
 for i in "${!ARGS[@]}"; do
   arg="${ARGS[$i]}"
   case "$arg" in
+    -h|--help)
+      print_help
+      exit 0
+      ;;
     --version)
       echo "php-compat-check $VERSION"
       exit 0

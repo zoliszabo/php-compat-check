@@ -29,6 +29,6 @@ ENV PATH="/root/.composer/vendor/bin:/root/.config/composer/vendor/bin:${PATH}"
 
 WORKDIR /work
 
-COPY VERSION /usr/local/share/php-compat-check/VERSION
+COPY VERSION HELP /usr/local/share/php-compat-check/
 COPY docker/bin/php-compat-check /usr/local/bin/php-compat-check
 RUN chmod +x /usr/local/bin/php-compat-check

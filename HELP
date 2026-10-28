@@ -1,0 +1,49 @@
+Check PHP compatibility for a local project, Git repository, or Packagist package.
+Test a specific PHP version or find the minimum supported PHP version.
+
+Usage:
+  php-compat-check <source> <php-version> [options]
+  php-compat-check <source> --min-php-version [options]
+  php-compat-check --help
+  php-compat-check --version
+
+Sources:
+  . | .. | ./path | ../path | /path    Local working files (read-only)
+  vendor/package[:version]           Packagist package with optional constraint
+  Git URL                            HTTPS or SSH repository URL
+  local:<path>                       Explicit local directory
+  package:<package>[:version]         Explicit Packagist package
+  repo:<url> | repository:<url>        Explicit Git repository
+
+Options:
+  -h, --help                         Show this help and exit
+  --version                          Show the executable's version and exit
+  --source-version=<version>         Select a remote package constraint, tag,
+                                     or branch; unavailable for local sources
+  --version=<ref>                     Deprecated alias for --source-version
+  --min-php-version                   Find the minimum compatible PHP version
+  --from-php-version=<version>        Set the lower bound for minimum detection
+  --ignore-composer-php-version       Ignore the project's Composer PHP constraint
+  --check-deps[=shallow|full]          Include production dependencies (default:
+                                     shallow trusts compatible PHP requirements;
+                                     full scans all production dependencies)
+  --show-deps                        Show dependency versions and scan status
+                                     with --check-deps
+  --show-warnings                    Display PHPCompatibility warnings
+  --scan-dirs=<dirs>                 Scan comma-separated directories/files
+                                     (default: Composer autoload paths)
+  --upgrade                          Pull the configured Docker image
+                                     (wrapper only; local installation unchanged)
+
+Local checks use current files and installed dependencies without modifying them.
+Remote sources are cloned; --check-deps installs their production dependencies.
+The wrapper uses Docker. Set PHP_COMPAT_CHECK_IMAGE to choose a different image.
+
+Examples:
+  php-compat-check . 8.1
+  php-compat-check . --min-php-version
+  php-compat-check vendor/package:^6.0 8.1 --check-deps=full
+  php-compat-check https://github.com/vendor/package 8.1 --source-version=v6.0.2
+
+For a complete overview, see:
+  https://github.com/zoliszabo/php-compat-check#readme

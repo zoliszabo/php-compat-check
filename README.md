@@ -18,6 +18,8 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 
 ## Usage
 
+Run `php-compat-check --help` (or `-h`) for a description, supported sources, options, and examples. Help works without Docker or Composer. Running without arguments also displays help and exits with status 1.
+
 ### Basic compatibility check
 
 ```bash
@@ -108,6 +110,7 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 
 | Flag | Description |
 |------|-------------|
+| `--help`, `-h` | Describe the command and show usage, supported sources, options, and examples |
 | `--check-deps[=shallow\|full]` | Check production dependencies: install them for remote sources, or use the installed set for local sources. Defaults to `shallow`. |
 | `--min-php-version` | Find the minimum compatible PHP version |
 | `--from-php-version=<version>` | Override the lower bound when using `--min-php-version` |
@@ -197,6 +200,7 @@ make uninstall
 
 ```bash
 install -D -m 644 VERSION /usr/local/share/php-compat-check/VERSION
+install -D -m 644 HELP /usr/local/share/php-compat-check/HELP
 cp bin/php-compat-check /usr/local/bin/php-compat-check
 chmod +x /usr/local/bin/php-compat-check
 ```
@@ -257,6 +261,8 @@ PHP_COMPAT_CHECK_IMAGE=php-compat-check:dev python3 -m unittest discover -s test
 Use [Semantic Versioning](https://semver.org/): patch releases for compatible fixes, minor releases for compatible features and deprecations, and major releases for breaking changes. Untagged development toward the next release uses a prerelease version such as `3.1.0-dev`.
 
 The root `VERSION` file is the single source of the version number. Both scripts read it directly in a checkout. Installation copies it to `share/php-compat-check/VERSION` beside the installation's `bin` directory, and Docker builds include it at `/usr/local/share/php-compat-check/VERSION`.
+
+The shared `HELP` file is packaged in the same directory so both entry points display the same command documentation.
 
 To release, update the root `VERSION` file to the final version (for example, `3.1.0`), run the tests, and commit the version bump along with any release documentation. Tag that commit, so the tagged source already contains the correct release version:
 

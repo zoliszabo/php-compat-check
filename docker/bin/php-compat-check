@@ -18,6 +18,13 @@ echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 echo_note() { echo -e "\033[37m[NOTE]\033[0m $1"; }
 
+print_help() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+  done < "${VERSION_FILE%/*}/HELP"
+}
+
 # -----------------------
 # CONFIG
 # -----------------------
@@ -474,6 +481,10 @@ SCAN_DIRS=()
 
 for arg in "$@"; do
   case $arg in
+    -h|--help)
+      print_help
+      exit 0
+      ;;
     --version)
       echo "php-compat-check $VERSION"
       exit 0
@@ -559,13 +570,7 @@ if [ "$SOURCE_TYPE" != "local" ] && [ "$SOURCE_TYPE" != "repository" ] && [[ "$R
 fi
 
 if [ -z "$REPO" ]; then
-  echo "Usage:"
-  echo "  php-compat-check <source> <php-version> [--check-deps[=shallow|full]]"
-  echo "  php-compat-check <source> --min-php-version [--from-php-version=7.4]"
-  echo "  php-compat-check --version"
-  echo "Remote source version: --source-version=<version> (deprecated alias: --version=<ref>)"
-  echo "Sources: vendor/package[:version], Git URL, ., ./path, /path,"
-  echo "         package:<package>, repo:<url>, repository:<url>, local:<path>"
+  print_help
   exit 1
 fi
 
