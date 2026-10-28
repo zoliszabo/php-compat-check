@@ -224,6 +224,14 @@ make run ARGS=". 8.1"
 
 `make run` always rebuilds the image before running, so you never test stale code.
 
+To run CLI regression tests (requires Python 3, Bash, PHP, jq, and a Composer PHAR on `PATH`):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The tests stub Docker, network access, and PHP_CodeSniffer while using real PHP and Composer semver. If Composer is not installed as a PHAR, set `COMPOSER_AUTOLOAD` to an autoloader that provides `Composer\Semver\Semver`.
+
 ## Requirements
 
 - Docker
