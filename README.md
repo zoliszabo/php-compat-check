@@ -174,14 +174,15 @@ php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 
 ### Option 1: Download a release archive (recommended)
 
-Download `php-compat-check-<version>.tar.gz` from [GitHub Releases](https://github.com/zoliszabo/php-compat-check/releases). This archive contains the executable and its supporting files; Git and Make are not required. Docker must be installed and running for compatibility checks.
+Download [php-compat-check-latest.tar.gz](https://github.com/zoliszabo/php-compat-check/releases/latest/download/php-compat-check-latest.tar.gz) to get the latest stable release without looking up a version. Each release also offers `php-compat-check-<version>.tar.gz` for a specific version. Both archives contain the executable and its supporting files; Git and Make are not required. Docker must be installed and running for compatibility checks.
 
-Extract the archive and install it for your user, replacing `X.Y.Z` with the downloaded version:
+Download, extract, and install the latest stable release for your user:
 
 ```bash
-archive_version="X.Y.Z"
-tar -xzf "php-compat-check-$archive_version.tar.gz"
-cd "php-compat-check-$archive_version"
+curl -fL -o php-compat-check-latest.tar.gz \
+  https://github.com/zoliszabo/php-compat-check/releases/latest/download/php-compat-check-latest.tar.gz
+tar -xzf php-compat-check-latest.tar.gz
+cd php-compat-check-latest
 mkdir -p "$HOME/.local"
 cp -R bin share "$HOME/.local/"
 export PATH="$HOME/.local/bin:$PATH"
@@ -191,7 +192,7 @@ php-compat-check --help
 
 If `~/.local/bin` is not already on your `PATH`, add the `export` line to your shell's startup file. Keep `share/php-compat-check/` alongside `bin/`; the executable needs its `VERSION` and `HELP` files. The first compatibility check automatically pulls the Docker image.
 
-Each release also includes `SHA256SUMS`. To verify the download, place it beside the archive and run `sha256sum --check SHA256SUMS` before extracting. To update the installed launcher, repeat the installation with a newer archive; `--upgrade` updates only the Docker image.
+Each release also includes `SHA256SUMS` covering both archives. To verify a download, place that release's checksum file beside the archive and run `sha256sum --check --ignore-missing SHA256SUMS` before extracting. The latest stable release's checksum file is available at [releases/latest/download/SHA256SUMS](https://github.com/zoliszabo/php-compat-check/releases/latest/download/SHA256SUMS). To update the installed launcher, repeat the installation; `--upgrade` updates only the Docker image.
 
 ### Option 2: Install from source with Make
 
@@ -294,7 +295,7 @@ git tag -a 3.1.0 -m "Release 3.1.0"
 git push origin 3.1.0
 ```
 
-Pushing the tag triggers the release workflow. It verifies that both executable versions match the tag before publishing the versioned Docker image and `latest`. After Docker publishing succeeds, it packages and verifies `php-compat-check-<version>.tar.gz` and publishes it with `SHA256SUMS` to a GitHub Release with generated release notes. The archive includes `bin/php-compat-check`, `share/php-compat-check/{VERSION,HELP}`, `README.md`, and `LICENSE`. Tags with a leading `v` are also accepted; prerelease tags create GitHub prereleases. Rerunning the workflow uploads replacement assets to an existing release.
+Pushing the tag triggers the release workflow. It verifies that both executable versions match the tag before publishing the versioned Docker image and `latest`. After Docker publishing succeeds, it packages and verifies `php-compat-check-<version>.tar.gz` and `php-compat-check-latest.tar.gz`, then publishes both with `SHA256SUMS` to a GitHub Release with generated release notes. Each archive extracts into a directory matching its filename without `.tar.gz` and includes `bin/php-compat-check`, `share/php-compat-check/{VERSION,HELP}`, `README.md`, and `LICENSE`. Both contain the actual release version in `VERSION`. Tags with a leading `v` are also accepted; prerelease tags create GitHub prereleases and do not replace the stable release selected by GitHub's `/releases/latest/download/` links. Rerunning the workflow uploads replacement assets to an existing release.
 
 After releasing, bump `VERSION` to the next development version (for example, `3.1.1-dev`) in a new commit. Choose the next minor or major version instead when the planned changes call for it.
 

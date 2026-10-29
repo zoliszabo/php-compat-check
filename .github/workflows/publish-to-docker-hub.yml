@@ -74,19 +74,22 @@ jobs:
           install -m 644 README.md LICENSE "$STAGING_DIR/$PACKAGE/"
           mkdir -p dist
           tar -czf "dist/$PACKAGE.tar.gz" -C "$STAGING_DIR" "$PACKAGE"
+          mv "$STAGING_DIR/$PACKAGE" "$STAGING_DIR/php-compat-check-latest"
+          tar -czf dist/php-compat-check-latest.tar.gz -C "$STAGING_DIR" php-compat-check-latest
           cd dist
-          sha256sum "$PACKAGE.tar.gz" > SHA256SUMS
+          sha256sum "$PACKAGE.tar.gz" php-compat-check-latest.tar.gz > SHA256SUMS
 
       - name: Verify release archive
         run: |
           VERSION=$(cat VERSION)
-          PACKAGE="php-compat-check-$VERSION"
           EXTRACT_DIR=$(mktemp -d)
           (cd dist && sha256sum --check SHA256SUMS)
-          tar -xzf "dist/$PACKAGE.tar.gz" -C "$EXTRACT_DIR"
-          test "$("$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --version)" = "php-compat-check $VERSION"
-          "$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --help > "$EXTRACT_DIR/help.txt"
-          cmp HELP "$EXTRACT_DIR/help.txt"
+          for PACKAGE in "php-compat-check-$VERSION" php-compat-check-latest; do
+            tar -xzf "dist/$PACKAGE.tar.gz" -C "$EXTRACT_DIR"
+            test "$("$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --version)" = "php-compat-check $VERSION"
+            "$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --help > "$EXTRACT_DIR/help.txt"
+            cmp HELP "$EXTRACT_DIR/help.txt"
+          done
 
       - name: Publish GitHub Release
         env:
