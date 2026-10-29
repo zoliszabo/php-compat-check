@@ -1,10 +1,11 @@
-.PHONY: install uninstall build run test test-integration
+.PHONY: install uninstall build run test test-integration release
 
 INSTALL_DIR ?= /usr/local/bin
 SCRIPT_SOURCE = bin/php-compat-check
 SCRIPT_NAME = php-compat-check
 VERSION_INSTALL_DIR = $(INSTALL_DIR)/../share/php-compat-check
 DEV_IMAGE = php-compat-check:dev
+RELEASE_REMOTE ?= origin
 
 install:
 	@install -D -m 644 VERSION "$(VERSION_INSTALL_DIR)/VERSION"
@@ -27,3 +28,9 @@ test:
 
 test-integration: build
 	PHP_COMPAT_CHECK_IMAGE=$(DEV_IMAGE) python3 -m unittest discover -s tests/integration -v
+
+release: export RELEASE_VERSION := $(RELEASE_VERSION)
+release: export NEXT_VERSION := $(NEXT_VERSION)
+release: export RELEASE_REMOTE := $(RELEASE_REMOTE)
+release:
+	@bash scripts/release.sh

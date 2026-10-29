@@ -288,16 +288,26 @@ The root `VERSION` file is the single source of the version number. Both scripts
 
 The shared `HELP` file is packaged in the same directory so both entry points display the same command documentation.
 
-To release, update the root `VERSION` file to the final version (for example, `3.1.0`), run the tests, and commit the version bump along with any release documentation. Tag that commit, so the tagged source already contains the correct release version:
+To release, start from a clean checkout on a branch that already exists on the remote, with Git, Make, an authenticated GitHub CLI (`gh`), and the prerequisites for `make test` installed:
 
 ```bash
-git tag -a 3.1.0 -m "Release 3.1.0"
-git push origin 3.1.0
+make release
 ```
+
+For example, with `VERSION` set to `3.2.1-dev`, this runs the regression tests, commits `VERSION` as `3.2.1`, creates the annotated `3.2.1` tag, and pushes the release commit and tag together to `origin`. It creates a draft GitHub Release with generated notes using `gh`, then commits and pushes `3.2.2-dev` on the same branch. The tag continues to point to the release commit. The command returns after pushing; GitHub Actions finishes building the images and archives, uploads the assets, and publishes the draft when they are ready.
+
+Override the release version, next development version, or remote when needed:
+
+```bash
+make release RELEASE_VERSION=3.3.0 NEXT_VERSION=3.4.0-dev
+make release RELEASE_REMOTE=upstream
+```
+
+`RELEASE_VERSION` defaults to the current version without `-dev`, and `NEXT_VERSION` defaults to the next patch version with `-dev`. Release versions must use stable `X.Y.Z` syntax, and the next development version must be greater than the release. The command rejects dirty checkouts, detached HEADs, existing release tags/releases, and branches behind or diverged from the remote. Test or preflight failures stop before changing `VERSION`; later failures keep completed commits, tags, and pushes for inspection. Resolve the failed step before continuing manually; rerunning `make release` is not a resume operation and will reject an existing tag. If only the final development push failed, push the current branch after resolving the failure. If GitHub Actions fails, fix the build or publishing problem and rerun the failed workflow jobs; the draft remains unpublished until assets are ready.
 
 Pushing the tag triggers the release workflow. It verifies that both executable versions match the tag before publishing the versioned Docker image and `latest`. After Docker publishing succeeds, it packages and verifies `php-compat-check-<version>.tar.gz` and `php-compat-check-latest.tar.gz`, then publishes both with `SHA256SUMS` to a GitHub Release with generated release notes. Each archive extracts into a directory matching its filename without `.tar.gz` and includes `bin/php-compat-check`, `share/php-compat-check/{VERSION,HELP}`, `README.md`, and `LICENSE`. Both contain the actual release version in `VERSION`. Tags with a leading `v` are also accepted; prerelease tags create GitHub prereleases and do not replace the stable release selected by GitHub's `/releases/latest/download/` links. Rerunning the workflow uploads replacement assets to an existing release.
 
-After releasing, bump `VERSION` to the next development version (for example, `3.1.1-dev`) in a new commit. Choose the next minor or major version instead when the planned changes call for it.
+Manual tag pushes remain supported; the workflow creates a draft release itself if one does not exist. When releasing manually, also commit and push the next development version after tagging.
 
 ## Requirements
 
