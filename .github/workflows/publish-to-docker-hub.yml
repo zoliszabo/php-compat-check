@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Release
 
 on:
   push:
@@ -53,3 +53,52 @@ jobs:
             zoliszabo/php-compat-check:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release-archive:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build release archive
+        run: |
+          VERSION=$(cat VERSION)
+          PACKAGE="php-compat-check-$VERSION"
+          STAGING_DIR=$(mktemp -d)
+          make install INSTALL_DIR="$STAGING_DIR/$PACKAGE/bin"
+          install -m 644 README.md LICENSE "$STAGING_DIR/$PACKAGE/"
+          mkdir -p dist
+          tar -czf "dist/$PACKAGE.tar.gz" -C "$STAGING_DIR" "$PACKAGE"
+          cd dist
+          sha256sum "$PACKAGE.tar.gz" > SHA256SUMS
+
+      - name: Verify release archive
+        run: |
+          VERSION=$(cat VERSION)
+          PACKAGE="php-compat-check-$VERSION"
+          EXTRACT_DIR=$(mktemp -d)
+          (cd dist && sha256sum --check SHA256SUMS)
+          tar -xzf "dist/$PACKAGE.tar.gz" -C "$EXTRACT_DIR"
+          test "$("$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --version)" = "php-compat-check $VERSION"
+          "$EXTRACT_DIR/$PACKAGE/bin/php-compat-check" --help > "$EXTRACT_DIR/help.txt"
+          cmp HELP "$EXTRACT_DIR/help.txt"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            OPTIONS=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+            if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+              OPTIONS+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" dist/* "${OPTIONS[@]}"
+          fi

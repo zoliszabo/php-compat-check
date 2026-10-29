@@ -172,9 +172,32 @@ php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 
 ## Installation
 
-### Option 1: Use Make (recommended)
+### Option 1: Download a release archive (recommended)
+
+Download `php-compat-check-<version>.tar.gz` from [GitHub Releases](https://github.com/zoliszabo/php-compat-check/releases). This archive contains the executable and its supporting files; Git and Make are not required. Docker must be installed and running for compatibility checks.
+
+Extract the archive and install it for your user, replacing `X.Y.Z` with the downloaded version:
 
 ```bash
+archive_version="X.Y.Z"
+tar -xzf "php-compat-check-$archive_version.tar.gz"
+cd "php-compat-check-$archive_version"
+mkdir -p "$HOME/.local"
+cp -R bin share "$HOME/.local/"
+export PATH="$HOME/.local/bin:$PATH"
+php-compat-check --version
+php-compat-check --help
+```
+
+If `~/.local/bin` is not already on your `PATH`, add the `export` line to your shell's startup file. Keep `share/php-compat-check/` alongside `bin/`; the executable needs its `VERSION` and `HELP` files. The first compatibility check automatically pulls the Docker image.
+
+Each release also includes `SHA256SUMS`. To verify the download, place it beside the archive and run `sha256sum --check SHA256SUMS` before extracting. To update the installed launcher, repeat the installation with a newer archive; `--upgrade` updates only the Docker image.
+
+### Option 2: Install from source with Make
+
+```bash
+git clone https://github.com/zoliszabo/php-compat-check.git
+cd php-compat-check
 make install
 ```
 
@@ -187,7 +210,7 @@ sudo make install
 You can customize the installation directory:
 
 ```bash
-make install INSTALL_DIR=$HOME/.local/bin
+make install INSTALL_DIR="$HOME/.local/bin"
 ```
 
 To uninstall:
@@ -196,7 +219,7 @@ To uninstall:
 make uninstall
 ```
 
-### Option 2: Manual installation
+### Option 3: Manual installation from source
 
 ```bash
 install -D -m 644 VERSION /usr/local/share/php-compat-check/VERSION
@@ -205,7 +228,7 @@ cp bin/php-compat-check /usr/local/bin/php-compat-check
 chmod +x /usr/local/bin/php-compat-check
 ```
 
-### Option 3: Use Docker directly
+### Option 4: Use Docker directly
 
 ```bash
 docker run --rm zoliszabo/php-compat-check php-compat-check <source> <php-version>
@@ -271,7 +294,9 @@ git tag -a 3.1.0 -m "Release 3.1.0"
 git push origin 3.1.0
 ```
 
-Pushing the tag triggers the Docker publishing workflow. It verifies that both executable versions match the tag before publishing the versioned image and `latest`. Tags with a leading `v` are also accepted. After releasing, bump `VERSION` to the next development version (for example, `3.1.1-dev`) in a new commit. Choose the next minor or major version instead when the planned changes call for it.
+Pushing the tag triggers the release workflow. It verifies that both executable versions match the tag before publishing the versioned Docker image and `latest`. After Docker publishing succeeds, it packages and verifies `php-compat-check-<version>.tar.gz` and publishes it with `SHA256SUMS` to a GitHub Release with generated release notes. The archive includes `bin/php-compat-check`, `share/php-compat-check/{VERSION,HELP}`, `README.md`, and `LICENSE`. Tags with a leading `v` are also accepted; prerelease tags create GitHub prereleases. Rerunning the workflow uploads replacement assets to an existing release.
+
+After releasing, bump `VERSION` to the next development version (for example, `3.1.1-dev`) in a new commit. Choose the next minor or major version instead when the planned changes call for it.
 
 ## Requirements
 
