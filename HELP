@@ -26,6 +26,8 @@ Options:
   --min-php-version                   Find the minimum compatible PHP version
   --max-php-version                   Find the highest compatible version checked
   --matrix                           Check each version and show PASS/FAIL/EXCLUDED
+  --format=text|json                  Output format (default: text); JSON reports
+                                     include findings, warnings, and scan limits
   --from-php-version=<version>        Set the lower bound for a version search
   --to-php-version=<version>          Set the upper bound for a version search
   --ignore-composer-php-version       Ignore the project's Composer PHP constraint
@@ -49,6 +51,7 @@ Examples:
   php-compat-check . --min-php-version
   php-compat-check . --max-php-version --to-php-version=8.4
   php-compat-check . --matrix --from-php-version=8.0 --to-php-version=8.5
+  php-compat-check . --matrix --from-php-version=8.0 --format=json
   php-compat-check vendor/package:^6.0 8.1 --check-deps=full
   php-compat-check https://github.com/vendor/package 8.1 --source-version=v6.0.2
 

@@ -12,6 +12,30 @@ if [ ! -f "$VERSION_FILE" ]; then
 fi
 IFS= read -r VERSION < "$VERSION_FILE"
 IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:latest}"
+JSON_MODE=0
+JSON_DELIVERED=0
+JSON_OUTPUT=""
+for arg in "$@"; do
+  case "$arg" in --format=json) JSON_MODE=1 ;; --format=text) JSON_MODE=0 ;; esac
+done
+for arg in "$@"; do
+  case "$arg" in -h|--help|--version) JSON_MODE=0 ;; esac
+done
+finish_output() {
+  local status=$?
+  trap - EXIT
+  if [ "$JSON_MODE" -eq 1 ] && [ "$JSON_DELIVERED" -eq 0 ]; then
+    printf '%s\n' '{"schema_version":1,"tool_version":null,"mode":null,"source":null,"scan":null,"results":[],"summary":{"status":"error","version":null,"upper_incompatibility_found":null},"diagnostics":[{"level":"error","message":"Unable to start compatibility analysis; see stderr."}],"exit_code":2}' >&3
+    status=2
+  fi
+  [ -z "$JSON_OUTPUT" ] || rm -f -- "$JSON_OUTPUT"
+  exit "$status"
+}
+trap finish_output EXIT
+if [ "$JSON_MODE" -eq 1 ]; then
+  exec 3>&1
+  exec 1>&2
+fi
 
 # Helper functions
 echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
@@ -48,6 +72,17 @@ for i in "${!ARGS[@]}"; do
       echo_warning "--version=<ref> is deprecated; use --source-version=<version> instead." >&2
       ARGS[$i]="--source-version=${arg#*=}"
       ;;
+    --format=json|--format=text) ;;
+    --format=*)
+      echo_error "Invalid output format: ${arg#*=}. Use text or json."
+      exit 2
+      ;;
+    --upgrade)
+      if [ "$JSON_MODE" -eq 1 ]; then
+        echo_error "--format=json is available for compatibility analysis; --upgrade uses text output."
+        exit 2
+      fi
+      ;;
     --upgrade|--check-deps|--check-deps=*|--min-php-version|--max-php-version|--matrix|--from-php-version=*|--to-php-version=*|\
     --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--source-version=*) ;;
     -*)
@@ -73,9 +108,11 @@ fi
 
 # Only explicit paths are local; vendor/package always remains Packagist shorthand.
 MOUNT_ARGS=(-v "$(pwd):/work" -w /work)
+ORIGINAL_SOURCE=""
 for i in "${!ARGS[@]}"; do
   source_arg="${ARGS[$i]}"
   [[ "$source_arg" == --* ]] && continue
+  ORIGINAL_SOURCE="$source_arg"
   case "$source_arg" in
     local:*) local_path="${source_arg#local:}" ;;
     .|..|./*|../*|/*) local_path="$source_arg" ;;
@@ -99,10 +136,19 @@ fi
 
 # Local sources are mounted read-only, even when dependency checks are requested.
 result=0
-docker run --rm \
-  "${MOUNT_ARGS[@]}" \
-  "$IMAGE" \
-  php-compat-check "${ARGS[@]}" || result=$?
+DOCKER_ARGS=(run --rm "${MOUNT_ARGS[@]}" -e "PHP_COMPAT_CHECK_SOURCE=$ORIGINAL_SOURCE" "$IMAGE" php-compat-check "${ARGS[@]}")
+if [ "$JSON_MODE" -eq 1 ]; then
+  JSON_OUTPUT=$(mktemp)
+  docker "${DOCKER_ARGS[@]}" > "$JSON_OUTPUT" || result=$?
+  if [ -s "$JSON_OUTPUT" ]; then
+    cat "$JSON_OUTPUT" >&3
+    JSON_DELIVERED=1
+  else
+    result=2
+  fi
+else
+  docker "${DOCKER_ARGS[@]}" || result=$?
+fi
 case "$result" in
   0|1|2) exit "$result" ;;
   *) exit 2 ;;

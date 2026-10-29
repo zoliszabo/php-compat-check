@@ -1,6 +1,7 @@
 """Real Docker/PHPCompatibility tests. Run with make test-integration."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,7 +16,6 @@ IMAGE = os.environ.get("PHP_COMPAT_CHECK_IMAGE", "php-compat-check:dev")
 
 
 class FixtureTest(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         result = subprocess.run(["docker", "image", "inspect", IMAGE],
@@ -23,27 +23,22 @@ class FixtureTest(unittest.TestCase):
         if result.returncode:
             raise RuntimeError(f"Cannot access test image {IMAGE}. Run make build first.\n{result.stderr}")
 
-
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="php-compat-check-fixture-")
         self.addCleanup(self.temp.cleanup)
         self.project = Path(self.temp.name) / "project with spaces"
 
-
     def use_fixture(self, name):
         shutil.copytree(FIXTURES / name, self.project)
         self.before = self.snapshot()
-
 
     def snapshot(self):
         return {str(path.relative_to(self.project)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in self.project.rglob("*") if path.is_file()}
 
-
     def tearDown(self):
         if hasattr(self, "before"):
             self.assertEqual(self.snapshot(), self.before, "The local project was modified")
-
 
     def check(self, *args, status=0, contains=(), excludes=()):
         result = subprocess.run(["bash", str(ROOT / "bin/php-compat-check"), *args],
@@ -57,6 +52,15 @@ class FixtureTest(unittest.TestCase):
         for text in excludes:
             self.assertNotIn(text, result.stdout)
 
+    def check_json(self, *args, status=0):
+        result = subprocess.run(["bash", str(ROOT / "bin/php-compat-check"), *args, "--format=json"],
+                                cwd=self.project, env=dict(os.environ, PHP_COMPAT_CHECK_IMAGE=IMAGE),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["exit_code"], status)
+        self.assertEqual(report["source"]["input"], ".")
+        return report
 
     def test_image_reports_the_shared_version(self):
         result = subprocess.run(
@@ -66,7 +70,6 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(result.stdout,
                          f"php-compat-check {(ROOT / 'VERSION').read_text().strip()}\n")
 
-
     def test_image_displays_command_help(self):
         result = subprocess.run(
             ["docker", "run", "--rm", IMAGE, "php-compat-check", "--help"],
@@ -74,29 +77,71 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, (ROOT / "HELP").read_text())
 
-
     def test_local_paths_and_prefixes(self):
         self.use_fixture("php81")
         for source in (".", "local:.", "../project with spaces", str(self.project)):
             with self.subTest(source=source):
                 self.check(source, "8.1", contains=["Compatible with PHP 8.1"])
 
-
     def test_enum_fails_on_php80(self):
         self.use_fixture("php81")
         self.check(".", "8.0", status=1,
                    contains=["Status.php", "Not compatible with PHP 8.0"])
 
-
     def test_minimum_php_version_from_actual_source(self):
         self.use_fixture("php81")
         self.check(".", "--min-php-version", contains=["Minimum supported PHP version: 8.1"])
 
+    def test_maximum_php_version_detects_removed_function(self):
+        self.use_fixture("removed-in-php80")
+        self.check(".", "--max-php-version", contains=["Highest compatible PHP version checked: 7.4"])
+
+    def test_maximum_at_search_ceiling_is_bounded(self):
+        self.use_fixture("php81")
+        self.check(".", "--max-php-version", "--to-php-version=8.2",
+                   contains=["Highest compatible PHP version checked: 8.2", "No upper incompatibility found"])
+
+    def test_matrix_reports_removed_function_across_versions(self):
+        self.use_fixture("removed-in-php80")
+        self.check(".", "--matrix", "--from-php-version=7.4", "--to-php-version=8.1", status=1,
+                   contains=["PHP 7.4  PASS", "PHP 8.0  FAIL", "PHP 8.1  FAIL"])
+
+    def test_json_check_reports_real_enum_findings(self):
+        self.use_fixture("php81")
+        report = self.check_json(".", "8.0", status=1)
+        self.assertEqual(report["results"][0]["status"], "incompatible")
+        self.assertGreater(report["results"][0]["errors"], 0)
+        self.assertTrue(any(finding["file"].endswith("Status.php")
+                            for finding in report["results"][0]["findings"]))
+
+    def test_json_maximum_has_real_upper_incompatibility_and_informational_warnings(self):
+        self.use_fixture("removed-in-php80")
+        report = self.check_json(".", "--max-php-version", "--from-php-version=7.4", "--to-php-version=8.0")
+        self.assertEqual(report["summary"]["version"], "7.4")
+        self.assertTrue(report["summary"]["upper_incompatibility_found"])
+        self.assertGreater(report["results"][-1]["warnings"], 0)
+
+    def test_json_matrix_matches_real_per_version_results(self):
+        self.use_fixture("php81")
+        report = self.check_json(".", "--matrix", "--from-php-version=8.0", "--to-php-version=8.2", status=1)
+        self.assertEqual([row["status"] for row in report["results"]],
+                         ["incompatible", "compatible", "compatible"])
+
+    def test_json_missing_dependencies_is_an_analysis_error(self):
+        self.use_fixture("missing-dependencies")
+        report = self.check_json(".", "8.1", "--check-deps", status=2)
+        self.assertEqual(report["summary"]["status"], "error")
+
+    def test_json_dependency_statuses_match_the_scan_mode(self):
+        self.use_fixture("installed-dependencies")
+        shallow = self.check_json(".", "8.0", "--check-deps")
+        self.assertEqual([dependency["status"] for dependency in shallow["results"][0]["dependencies"]], ["trusted"])
+        full = self.check_json(".", "8.0", "--check-deps=full", status=1)
+        self.assertEqual([dependency["status"] for dependency in full["results"][0]["dependencies"]], ["checked"])
 
     def test_dependencies_are_excluded_without_flag_in_root_scan(self):
         self.use_fixture("installed-dependencies")
         self.check(".", "7.4", contains=["Compatible with PHP 7.4"])
-
 
     def test_shallow_scan_trusts_declared_compatibility(self):
         self.use_fixture("installed-dependencies")
@@ -104,13 +149,11 @@ class FixtureTest(unittest.TestCase):
                    contains=["Compatible with PHP 8.0", "fixture/runtime", "trusted"],
                    excludes=["fixture/dev"])
 
-
     def test_full_scan_detects_dependency_source_incompatibility(self):
         self.use_fixture("installed-dependencies")
         self.check(".", "8.0", "--check-deps=full", status=1,
                    contains=["RuntimeStatus.php", "Not compatible with PHP 8.0"],
                    excludes=["DevOnly.php"])
-
 
     def test_dev_dependencies_are_excluded_from_full_scan(self):
         self.use_fixture("installed-dependencies")
@@ -119,12 +162,10 @@ class FixtureTest(unittest.TestCase):
                              "Compatible with PHP 8.1"],
                    excludes=["fixture/dev", "DevOnly.php"])
 
-
     def test_installed_dependency_requirement_is_enforced(self):
         self.use_fixture("installed-dependencies")
         self.check(".", "7.4", "--check-deps", status=1,
                    contains=["Installed dependency fixture/runtime requires PHP >=8.0"])
-
 
     def test_dependency_modes_have_different_minimums(self):
         self.use_fixture("installed-dependencies")
@@ -133,30 +174,11 @@ class FixtureTest(unittest.TestCase):
                 self.check(".", "--min-php-version", f"--check-deps={mode}",
                            contains=[f"Minimum supported PHP version: {minimum}"])
 
-
     def test_missing_dependencies_are_reported_without_installing(self):
         self.use_fixture("missing-dependencies")
         self.check(".", "7.4", contains=["Compatible with PHP 7.4"])
         self.check(".", "7.4", "--check-deps", status=2,
                    contains=["Installed dependency metadata not found", "Run Composer install"])
-
-
-    def test_maximum_php_version_detects_removed_function(self):
-        self.use_fixture("removed-in-php80")
-        self.check(".", "--max-php-version", contains=["Highest compatible PHP version checked: 7.4"])
-
-
-    def test_maximum_at_search_ceiling_is_bounded(self):
-        self.use_fixture("php81")
-        self.check(".", "--max-php-version", "--to-php-version=8.2",
-                   contains=["Highest compatible PHP version checked: 8.2", "No upper incompatibility found"])
-
-
-    def test_matrix_reports_removed_function_across_versions(self):
-        self.use_fixture("removed-in-php80")
-        self.check(".", "--matrix", "--from-php-version=7.4", "--to-php-version=8.1", status=1,
-                   contains=["PHP 7.4  PASS", "PHP 8.0  FAIL", "PHP 8.1  FAIL"])
-
 
 
 if __name__ == "__main__":

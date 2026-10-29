@@ -8,8 +8,11 @@ Work through these in order, verifying each item before starting the next.
    including compatibility gaps and versions excluded by Composer constraints.
 3. [x] Make exit codes consistent for local and remote sources and distinguish
    incompatibility from invalid input or failed analysis for CI.
-4. [ ] Add `--format=json` for checks, minimum/maximum searches, and matrices,
+4. [x] Add `--format=json` for checks, minimum/maximum searches, and matrices,
    including structured results, diagnostics, and coverage metadata.
 
 Each item includes CLI help, README updates, regression tests, and relevant
 Docker/PHPCompatibility fixture checks. Commits and releases are separate steps.
+
+Verification completed: regression tests, focused JSON regressions, all 20 real
+Docker/PHPCompatibility fixture tests, Bash/PHP syntax checks, and diff checks.

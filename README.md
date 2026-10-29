@@ -10,6 +10,7 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 - Automatically detect the minimum supported PHP version
 - Find the highest compatible PHP version within a bounded search
 - Report compatibility per PHP version, including gaps and Composer exclusions
+- Emit structured JSON reports and consistent CI exit codes
 - Optional dependency-aware analysis using Composer
 - Accepts a local directory, Git repository URL, or Packagist package name (`vendor/package[:version]`)
 - Checks local working files and installed dependencies without modifying the project
@@ -138,6 +139,7 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--min-php-version` | Find the minimum compatible PHP version |
 | `--max-php-version` | Find the highest compatible PHP version within the checked range |
 | `--matrix` | Check every version in the selected range and show PASS/FAIL/EXCLUDED |
+| `--format=text\|json` | Output format; JSON includes per-version findings and scan metadata |
 | `--from-php-version=<version>` | Set the lower bound for a version search or matrix |
 | `--to-php-version=<version>` | Set the upper bound for a version search or matrix |
 | `--ignore-composer-php-version` | Ignore the root project's `require.php` when filtering or validating targets; dependency checks still use the target PHP platform |
@@ -181,6 +183,30 @@ php-compat-check sebastian/diff 8.1 --check-deps --show-deps
 # Scan specific directories
 php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 ```
+
+### JSON reports
+
+```bash
+php-compat-check . 8.1 --format=json
+php-compat-check . --max-php-version --check-deps=full --format=json
+php-compat-check . --matrix --from-php-version=8.0 --format=json > compatibility.json
+```
+
+`--format=json` writes one JSON document to stdout and sends progress and human diagnostics to stderr. It supports checks, both searches, and matrices. Exit codes keep the meaning below, including when a valid JSON report describes incompatibility or an analysis error. `--format=text` is the default. Help and version requests remain plain text; the Docker image upgrade command uses text output.
+
+Reports use `schema_version: 1` with these fields:
+
+| Field | Contents |
+|-------|----------|
+| `tool_version`, `mode`, `source` | Checker version, `check`/`min`/`max`/`matrix`, and source input/type/version/commit |
+| `scan` | Requested bounds, known PHP versions, Composer constraint and whether it was ignored, dependency mode, and static-analysis coverage limits |
+| `results` | Rows with `php_version`, `status`, `reason`, error/warning counts, findings, and dependency versions/statuses |
+| `summary` | Overall status, selected version for successful checks/searches, and whether a maximum search found an incompatible newer version |
+| `diagnostics`, `exit_code` | Diagnostic messages with levels, and the same code returned by the command |
+
+Row statuses are `compatible`, `incompatible`, `excluded`, and `error`. Reasons distinguish source findings, Composer constraints, dependency requirements/resolution, and scanner failures. Counts are `null` when the scanner did not run; excluded versions are never reported as passing. Findings include relative file paths, locations, messages, sniff identifiers, and severity. JSON always includes scanner warnings, independently of `--show-warnings`, which controls text display only. Dependency details exclude development-only packages and identify trusted versus scanned packages.
+
+For maximum searches, `summary.version` is the highest passing version checked. `summary.upper_incompatibility_found` is false when no newer checked version failed; inspect the scan bounds and Composer constraint before inferring an upper limit. Matrix reports preserve every row, including gaps. `scan.coverage_complete` is false because static analysis does not establish complete runtime compatibility. Early startup failures may have `null` metadata and no result rows, while still returning a structured error report.
 
 ### Exit codes for automation
 

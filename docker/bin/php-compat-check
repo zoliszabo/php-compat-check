@@ -13,10 +13,10 @@ fi
 IFS= read -r VERSION < "$VERSION_FILE"
 
 # Helper functions
-echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
+echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; json_diagnostic error "$1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
-echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
+echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; json_diagnostic warning "$1"; }
 echo_note() { echo -e "\033[37m[NOTE]\033[0m $1"; }
 
 print_help() {
@@ -31,6 +31,69 @@ print_help() {
 # -----------------------
 PHP_VERSIONS=("5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0" "8.1" "8.2" "8.3" "8.4" "8.5")
 MAX_PHP_VERSION="${PHP_VERSIONS[-1]}"
+
+JSON_MODE=0
+REPORT_DIR=""
+TMP_DIR=""
+REPORT_HELPER="$SCRIPT_DIR/../report.php"
+[ -f "$REPORT_HELPER" ] || REPORT_HELPER="$SCRIPT_DIR/../share/php-compat-check/report.php"
+for arg in "$@"; do
+  case "$arg" in --format=json) JSON_MODE=1 ;; --format=text) JSON_MODE=0 ;; esac
+done
+for arg in "$@"; do
+  case "$arg" in -h|--help|--version) JSON_MODE=0 ;; esac
+done
+
+json_fallback() {
+  printf '%s\n' '{"schema_version":1,"tool_version":null,"mode":null,"source":null,"scan":null,"results":[],"summary":{"status":"error","version":null,"upper_incompatibility_found":null},"diagnostics":[{"level":"error","message":"Unable to start compatibility analysis; see stderr."}],"exit_code":2}' >&3
+}
+
+finish_output() {
+  local status=$? known_json="[" separator="" v
+  trap - EXIT
+  case "$status" in 0|1|2) ;; *) status=2 ;; esac
+  if [ "$JSON_MODE" -eq 1 ]; then
+    for v in "${PHP_VERSIONS[@]}"; do
+      known_json+="$separator\"$v\""
+      separator=,
+    done
+    known_json+="]"
+    if [ -n "$REPORT_DIR" ] && command -v php >/dev/null && [ -f "$REPORT_HELPER" ]; then
+      if ! printf '%s' "$known_json" | php "$REPORT_HELPER" finish "$REPORT_DIR" "$status" "$VERSION" \
+        "${MODE:-check}" "${ORIGINAL_REPO:-${REPO:-}}" "${SOURCE_TYPE:-}" "${CLONED_VERSION:-}" "${CLONED_HASH:-}" \
+        "${FROM_PHP_VERSION:-${PHP_VERSION:-}}" "${TO_PHP_VERSION:-${PHP_VERSION:-}}" "${ROOT_PHP_CONSTRAINT:-}" \
+        "${IGNORE_COMPOSER_PHP_VERSION:-0}" "${CHECK_DEPS:-}" "${RESULT_VERSION:-}" >&3; then
+        json_fallback
+        status=2
+      fi
+    else
+      json_fallback
+      status=2
+    fi
+  fi
+  [ -z "$TMP_DIR" ] || rm -rf -- "$TMP_DIR"
+  [ -z "$REPORT_DIR" ] || rm -rf -- "$REPORT_DIR"
+  exit "$status"
+}
+trap finish_output EXIT
+if [ "$JSON_MODE" -eq 1 ]; then
+  exec 3>&1
+  exec 1>&2
+  REPORT_DIR=$(mktemp -d)
+fi
+
+json_diagnostic() {
+  if [ "$JSON_MODE" -eq 1 ] && [ -n "$REPORT_DIR" ] && command -v php >/dev/null && [ -f "$REPORT_HELPER" ]; then
+    php "$REPORT_HELPER" diagnostic "$REPORT_DIR" "$1" "$2" || true
+  fi
+}
+
+record_result() {
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  if [ "$2" = excluded ]; then printf '{}\n' > "$REPORT_DIR/current.json"; fi
+  printf '%s' "${DEPENDENCY_PACKAGES:-[]}" | php "$REPORT_HELPER" result "$REPORT_DIR" \
+    "$1" "$2" "$3" "$PROJECT_DIR" "$CHECK_DEPS" "$SOURCE_TYPE" "$COMPOSER_HOME"
+}
 
 # -----------------------
 # FUNCTIONS
@@ -279,6 +342,20 @@ print_config() {
 }
 
 run_check() {
+  local result=0 status
+  CHECK_REASON=""
+  if [ "$JSON_MODE" -eq 1 ]; then printf '{}\n' > "$REPORT_DIR/current.json"; fi
+  perform_check "$@" || result=$?
+  case "$result" in
+    0) status=compatible ;;
+    1) status=incompatible ;;
+    *) status=error; result=2 ;;
+  esac
+  record_result "$1" "$status" "$CHECK_REASON" || return 2
+  return "$result"
+}
+
+perform_check() {
   local version="$1"
   local verbose="${2:-0}"
   local target="${version}"
@@ -308,6 +385,7 @@ run_check() {
   fi
 
   if [ "$php_constraint_fails" -eq 1 ]; then
+    CHECK_REASON=composer_constraint
     echo_error "PHP $version does not satisfy the project's requirement: $php_constraint_value"
     echo_note "Use --ignore-composer-php-version to bypass this check."
     return 1
@@ -316,6 +394,7 @@ run_check() {
   if [ -n "$CHECK_DEPS" ]; then
     if [ "$SOURCE_TYPE" != "local" ]; then
       DEPENDENCY_PACKAGES='[]'
+      CHECK_REASON=composer_error
       rm -rf vendor composer.lock
 
       jq --argjson ignore "$IGNORE_COMPOSER_PHP_VERSION" '
@@ -336,6 +415,7 @@ run_check() {
         echo_error "Composer failed"
         echo "$composer_output"
         if [ "$composer_status" -eq 2 ]; then
+          CHECK_REASON=dependency_resolution
           return 1
         fi
         return 2
@@ -431,6 +511,7 @@ run_check() {
 
   echo ""
   if [ "$dependency_constraint_fails" -eq 1 ]; then
+    CHECK_REASON=dependency_constraint
     echo_error "Not compatible with PHP $version (installed dependency requirements)"
     return 1
   fi
@@ -448,6 +529,7 @@ run_check() {
   )
 
   local tmpjson tmperrors scanner_status=0
+  CHECK_REASON=scanner_error
   tmpjson=$(mktemp) || return 2
   tmperrors=$(mktemp) || { rm -f "$tmpjson"; return 2; }
   phpcs --report=json "${phpcs_args[@]}" > "$tmpjson" 2>"$tmperrors" || scanner_status=$?
@@ -470,6 +552,9 @@ run_check() {
     echo_error "PHP_CodeSniffer failed without reporting findings for PHP $version."
     rm -f "$tmpjson" "$tmperrors"
     return 2
+  fi
+  if [ "$JSON_MODE" -eq 1 ]; then
+    cp "$tmpjson" "$REPORT_DIR/current.json" || return 2
   fi
 
   if [ "$verbose" -eq 1 ]; then
@@ -507,6 +592,8 @@ run_check() {
   rm -f "$tmpjson" "$tmperrors"
   local result
   [ "${phpcs_errors:-1}" -gt 0 ] && result=1 || result=0
+  CHECK_REASON=""
+  [ "$result" -eq 0 ] || CHECK_REASON=source
 
   echo ""
   if [ $result -eq 0 ]; then
@@ -563,6 +650,11 @@ for arg in "$@"; do
       ;;
     --matrix)
       select_mode matrix
+      ;;
+    --format=json|--format=text) ;;
+    --format=*)
+      echo_error "Invalid output format: ${arg#*=}. Use text or json."
+      exit 2
       ;;
     --from-php-version=*)
       FROM_PHP_VERSION="${arg#*=}"
@@ -645,7 +737,7 @@ if [ "$MODE" != check ]; then
   fi
 fi
 
-ORIGINAL_REPO="$REPO"
+ORIGINAL_REPO="${PHP_COMPAT_CHECK_SOURCE:-$REPO}"
 SOURCE_TYPE=""
 case "$REPO" in
   package:*) SOURCE_TYPE="package"; REPO="${REPO#package:}" ;;
@@ -741,7 +833,6 @@ if [ "$SOURCE_TYPE" = "local" ]; then
   CLONED_HASH=""
 else
   TMP_DIR=$(mktemp -d)
-  trap 'rm -rf -- "$TMP_DIR"' EXIT
   PROJECT_DIR="$TMP_DIR"
   CLONE_ARGS=(--depth=1)
   if [ -n "$REPO_VERSION" ]; then
@@ -772,6 +863,10 @@ if [ -f composer.json ]; then
     echo_error "Invalid Composer PHP constraint."
     exit 2
   fi
+fi
+ROOT_PHP_CONSTRAINT=""
+if [ -f composer.json ]; then
+  ROOT_PHP_CONSTRAINT=$(jq -r '.require.php // ""' composer.json)
 fi
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
@@ -810,6 +905,7 @@ if [ "$MODE" = check ]; then
 
   result=0
   run_check "$PHP_VERSION" 1 || result=$?
+  RESULT_VERSION="$PHP_VERSION"
 
   exit "$result"
 fi
@@ -851,6 +947,7 @@ failed_count=0
 for v in "${SCAN_PHP_VERSIONS[@]}"; do
   if [ -n "$php_constraint" ] && ! satisfies_php_constraint "$v" "$php_constraint"; then
     MATRIX_ROWS+=("PHP $v  EXCLUDED (Composer requirement: $php_constraint)")
+    record_result "$v" excluded composer_constraint
     continue
   fi
   result=0
@@ -871,6 +968,7 @@ for v in "${SCAN_PHP_VERSIONS[@]}"; do
   fi
   if [ "$result" -eq 0 ]; then
     echo ""
+    RESULT_VERSION="$v"
     if [ "$MODE" = min ]; then
       echo_success "Minimum supported PHP version: $v"
       if [ -n "$php_constraint" ] && { [ "$v" = "$constraint_min" ] || [ "$v" = "$EXPLICIT_FROM_PHP_VERSION" ]; }; then
