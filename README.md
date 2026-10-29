@@ -1,6 +1,6 @@
 # php-compat-check
 
-A CLI tool for detecting the minimum and target PHP version compatibility of Composer-based projects.
+A CLI tool for checking PHP version compatibility, finding compatible version bounds for Composer-based projects.
 
 It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependencies to provide more realistic results.
 
@@ -8,6 +8,7 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 
 - Check compatibility against a specific PHP version
 - Automatically detect the minimum supported PHP version
+- Find the highest compatible PHP version within a bounded search
 - Optional dependency-aware analysis using Composer
 - Accepts a local directory, Git repository URL, or Packagist package name (`vendor/package[:version]`)
 - Checks local working files and installed dependencies without modifying the project
@@ -76,9 +77,21 @@ Without `--check-deps`, `vendor/` is excluded. With `--check-deps`, installed pr
 php-compat-check <source> --min-php-version
 ```
 
-Scans versions that satisfy the `require.php` constraint declared in `composer.json`. Defaults to scanning from `5.6` if no constraint is found.
+Scans known versions that satisfy the `require.php` constraint declared in `composer.json`, starting at PHP 5.6 unless a lower bound is supplied. Use `--from-php-version` and `--to-php-version` to bound the search.
 
 If the found minimum equals the constraint's own minimum (or the explicitly provided `--from-php-version`), a note will suggest retrying with `--ignore-composer-php-version` to scan without filtering.
+
+### Find the highest compatible PHP version checked
+
+```bash
+php-compat-check . --max-php-version
+php-compat-check . --max-php-version --from-php-version=8.0 --to-php-version=8.4
+php-compat-check . --max-php-version --check-deps=full
+```
+
+Checks known PHP versions from newest to oldest and stops at the first passing version. The tool currently knows PHP 5.6, 7.0–7.4, and 8.0–8.5. Both search modes accept bounds from that list; reversed bounds, conflicting search modes, and a target version combined with a search are rejected.
+
+The result is the **highest compatible version checked**, rather than a promise about future PHP releases or every version below it. When the search ceiling passes, the output explicitly says that no upper incompatibility was found within the checked versions. Composer constraints filter the search by default, and the output explains their effect; use `--ignore-composer-php-version` to investigate source compatibility beyond the declared constraints. Dependency modes behave as described below. Static analysis can miss runtime issues and does not cover every PHP change.
 
 ### Scanning dependencies
 
@@ -113,7 +126,9 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--help`, `-h` | Describe the command and show usage, supported sources, options, and examples |
 | `--check-deps[=shallow\|full]` | Check production dependencies: install them for remote sources, or use the installed set for local sources. Defaults to `shallow`. |
 | `--min-php-version` | Find the minimum compatible PHP version |
-| `--from-php-version=<version>` | Override the lower bound when using `--min-php-version` |
+| `--max-php-version` | Find the highest compatible PHP version within the checked range |
+| `--from-php-version=<version>` | Set the lower bound for a version search |
+| `--to-php-version=<version>` | Set the upper bound for a version search |
 | `--ignore-composer-php-version` | Ignore `require.php` from `composer.json` when determining the scan range, filtering versions, or setting the platform version |
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
 | `--show-deps` | With `--check-deps`, print installed production dependencies and their scan status (`checked`, `trusted`, `ignored`, or locally `incompatible`) |
@@ -155,22 +170,6 @@ php-compat-check sebastian/diff 8.1 --check-deps --show-deps
 # Scan specific directories
 php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 ```
-
-## How it works
-
-1. Resolves the source type from an explicit prefix or the package/URL/path syntax
-2. Resolves Packagist packages to Git URLs and clones remote repositories into a temporary directory; local directories are mounted read-only instead
-3. Detects scan directories from `composer.json` autoload (`psr-4`, `psr-0`, `classmap`, `files`); falls back to `.`
-4. When `--check-deps` is set: for remote sources, strips `require-dev` and `autoload-dev`, simulates the target PHP platform version, and installs non-dev dependencies; for local sources, reads installed production dependency metadata
-5. Validates the requested version (or scanned range) against `composer.json`'s `require.php` constraint using Composer's semver library, unless `--ignore-composer-php-version` is set
-6. Auto-detects polyfill libraries and applies the appropriate PHPCompatibility companion standards to suppress false positives:
-   - Without `--check-deps`: reads `require` from `composer.json`
-   - With `--check-deps`: reads `composer.lock` after remote installation, or local installed metadata, to catch transitive polyfill dependencies
-   - Supported: `symfony/polyfill-php*`, `paragonie/random_compat`, `paragonie/sodium_compat`, `ircmaxell/password-compat`
-7. In shallow mode, vendor packages whose `require.php` satisfies the target are trusted and excluded from the scan; packages with no `require.php` are always scanned
-8. Runs PHPCompatibility via PHP_CodeSniffer against the resolved directories, ignoring `vendor/composer/`, `vendor/autoload.php`, and polyfill version-gated bootstrap files (e.g. `bootstrap80.php`)
-
-## Installation
 
 ### Option 1: Download a release archive (recommended)
 

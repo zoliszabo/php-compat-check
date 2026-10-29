@@ -9,6 +9,7 @@ third-party dependencies or a lock file intended for installation.
 | Project | Expected behavior |
 |---------|-------------------|
 | `php81` | The enum requires PHP 8.1 despite the declared `>=7.4` minimum. PHP 8.0 fails; minimum-version detection finds 8.1. |
+| `removed-in-php80` | Calls `each()`, deprecated in PHP 7.2 and removed in PHP 8.0. The highest compatible known version is 7.4; deprecation warnings alone do not fail the check. |
 | `installed-dependencies` | Root code requires PHP 7.4 and uses the fallback `.` scan directory. The production dependency declares `>=8.0` but contains a PHP 8.1 enum: shallow mode trusts it on 8.0, full mode catches it. Its PHP 8.2 development dependency must be excluded. |
 | `missing-dependencies` | Source-only scans pass on 7.4; dependency checks fail because the declared package is not installed. |
 

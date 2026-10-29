@@ -47,7 +47,7 @@ for i in "${!ARGS[@]}"; do
       echo_warning "--version=<ref> is deprecated; use --source-version=<version> instead." >&2
       ARGS[$i]="--source-version=${arg#*=}"
       ;;
-    --upgrade|--check-deps|--check-deps=*|--min-php-version|--from-php-version=*|\
+    --upgrade|--check-deps|--check-deps=*|--min-php-version|--max-php-version|--from-php-version=*|--to-php-version=*|\
     --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--source-version=*) ;;
     -*)
       echo_error "Unknown option: $arg"

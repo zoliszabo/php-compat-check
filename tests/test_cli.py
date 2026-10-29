@@ -51,7 +51,8 @@ elif name == "curl":
                                  "versions": {"v1.0.0": {}, "v1.2.0": {}, "dev-main": {}}}}))
 elif name == "phpcs":
     target = args[args.index("testVersion") + 1]
-    errors = int(tuple(map(int, target.split("."))) < (8, 1))
+    failures = os.environ.get("TEST_FAILURE_VERSIONS")
+    errors = int(target in failures.split(",")) if failures is not None else int(tuple(map(int, target.split("."))) < (8, 1))
     print(json.dumps({"totals": {"errors": errors, "warnings": 0}, "files": {}}))
     sys.exit(errors)
 '''
@@ -135,6 +136,7 @@ class VersionTest(unittest.TestCase):
 
 
 class CliTest(unittest.TestCase):
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="php-compat-check-test-")
         self.addCleanup(self.temp.cleanup)
@@ -168,15 +170,18 @@ class CliTest(unittest.TestCase):
                         TEST_LOG=str(self.log), TEST_COMPOSER_HOME=str(composer_home),
                         TEST_REMOTE=str(self.project))
 
+
     def write(self, name, data):
         path = self.project / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data))
 
+
     def run_cli(self, *args, wrapper=False):
         return subprocess.run(["bash", str(WRAPPER if wrapper else CHECKER), *args],
                               cwd=self.project, env=self.env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
 
     def calls(self, tool):
         if not self.log.exists():
@@ -184,9 +189,11 @@ class CliTest(unittest.TestCase):
         return [call for line in self.log.read_text().splitlines()
                 if (call := json.loads(line))["tool"] == tool]
 
+
     def snapshot(self):
         return {str(p.relative_to(self.project)): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in self.project.rglob("*") if p.is_file()}
+
 
     def install(self, packages, dev=()):
         self.write("vendor/composer/installed.json",
@@ -197,6 +204,7 @@ class CliTest(unittest.TestCase):
                 self.write(f"vendor/{package['name']}/composer.json", package)
                 (self.project / f"vendor/{package['name']}/code.php").write_text("<?php\n")
 
+
     def test_wrapper_mounts_local_paths_read_only(self):
         for source in (".", "../project with spaces", str(self.project),
                        "local:.", f"local:{self.project}"):
@@ -206,6 +214,7 @@ class CliTest(unittest.TestCase):
                 args = self.calls("docker")[-1]["args"]
                 self.assertIn(f"{self.project}:/project:ro", args)
                 self.assertEqual(args[-3:], ["--show-warnings", "local:/project", "8.1"])
+
 
     def test_unknown_options_fail_before_external_commands(self):
         for wrapper in (False, True):
@@ -219,6 +228,7 @@ class CliTest(unittest.TestCase):
                         self.assertIn(f"Unknown option: {option}", result.stdout)
                         self.assertFalse(self.log.exists(), result.stdout)
 
+
     def test_wrapper_forwards_source_version_and_normalizes_deprecated_alias(self):
         for option in ("--source-version=dev-main", "--version=dev-main"):
             with self.subTest(option=option):
@@ -227,6 +237,7 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(self.calls("docker")[-1]["args"][-1],
                                  "--source-version=dev-main")
                 self.assertEqual("deprecated" in result.stdout, option.startswith("--version="))
+
 
     def test_wrapper_preserves_remote_arguments_and_image_override(self):
         (self.project / "vendor/package").mkdir(parents=True)
@@ -240,6 +251,7 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(args[-4:], ["php-compat-check:dev", "php-compat-check", source, "8.1"])
                 self.assertNotIn("local:/project", args)
 
+
     def test_missing_local_directory_fails_before_docker(self):
         for source in ("./missing", "local:", "local:src/uncommitted.php"):
             with self.subTest(source=source):
@@ -247,6 +259,7 @@ class CliTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Local directory not found", result.stdout)
         self.assertEqual(self.calls("docker"), [])
+
 
     def test_local_source_without_git_keeps_working_files_and_excludes_vendor(self):
         self.install([{"name": "vendor/library", "version": "1"}])
@@ -264,6 +277,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.calls("git"), [])
         self.assertEqual(self.calls("curl"), [])
         self.assertTrue(all(c["args"] == ["config", "--global", "home"] for c in self.calls("composer")))
+
 
     def test_local_dependency_modes_use_installed_metadata_and_exclude_dev(self):
         self.install([{"name": "vendor/trusted", "version": "1", "require": {"php": "^8.0"}},
@@ -288,6 +302,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertTrue(all(c["args"] == ["config", "--global", "home"] for c in self.calls("composer")))
 
+
     def test_local_minimum_respects_installed_dependency_requirements(self):
         self.install([{"name": "vendor/newer", "version": "1", "require": {"php": ">=8.2"}}])
         before = self.snapshot()
@@ -297,6 +312,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("Minimum supported PHP version: 8.2", result.stdout)
         self.assertEqual(len(self.calls("phpcs")), 1)
         self.assertEqual(self.snapshot(), before)
+
 
     def test_missing_dependencies_and_local_version_fail(self):
         self.write("composer.json", {"require": {"vendor/missing": "*"}})
@@ -314,11 +330,13 @@ class CliTest(unittest.TestCase):
                 self.assertIn("--source-version is not supported", result.stdout)
         self.assertEqual(self.calls("phpcs"), [])
 
+
     def test_local_project_without_dependencies_needs_no_vendor(self):
         result = self.run_cli(".", "8.1", "--check-deps", "--show-deps")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("No dependencies", result.stdout)
         self.assertNotIn("vendor", self.calls("phpcs")[-1]["args"])
+
 
     def test_local_incompatibility_returns_failure(self):
         result = self.run_cli(".", "8.0")
@@ -331,12 +349,14 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("Installed dependency vendor/newer requires PHP >=8.2", result.stdout)
 
+
     def test_large_installed_metadata_does_not_exceed_command_argument_limits(self):
         self.install([{"name": "vendor/library", "version": "1", "require": {"php": "^8.0"},
                        "description": "x" * 200000}])
         result = self.run_cli(".", "8.1", "--check-deps")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Trusting 1 vendor package(s)", result.stdout)
+
 
     def test_composer_one_metadata_and_missing_dependency_directory(self):
         packages = [{"name": "vendor/runtime", "version": "1"}, {"name": "vendor/dev", "version": "2"}]
@@ -352,6 +372,7 @@ class CliTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("Installed dependency directory missing", result.stdout)
 
+
     def test_root_scan_fallback_and_minimum_version_with_composer_constraint(self):
         self.write("composer.json", {"require": {"php": "^8.0"}})
         before = self.snapshot()
@@ -361,6 +382,7 @@ class CliTest(unittest.TestCase):
         self.assertIn(".", self.calls("phpcs")[-1]["args"])
         self.assertIn("*/vendor/*", next(a for a in self.calls("phpcs")[-1]["args"] if a.startswith("--ignore=")))
         self.assertEqual(self.snapshot(), before)
+
 
     def test_remote_sources_keep_resolution_and_version_selection(self):
         for source in ("vendor/package:^1.0", "package:vendor/package:^1.0"):
@@ -382,6 +404,7 @@ class CliTest(unittest.TestCase):
                 clone = next(c for c in reversed(self.calls("git")) if c["args"][0] == "clone")
                 self.assertIn("main", clone["args"])
 
+
     def test_source_version_and_deprecated_alias_select_package_versions(self):
         for option in ("--source-version=^1.0", "--version=^1.0"):
             with self.subTest(option=option):
@@ -396,6 +419,7 @@ class CliTest(unittest.TestCase):
         clone = next(c for c in reversed(self.calls("git")) if c["args"][0] == "clone")
         self.assertIn("main", clone["args"])
 
+
     def test_empty_and_conflicting_source_versions_fail_before_external_commands(self):
         for args in (("vendor/package", "--source-version="),
                      ("vendor/package", "--version="),
@@ -409,6 +433,7 @@ class CliTest(unittest.TestCase):
                 self.assertIn("[ERROR]", result.stdout)
                 self.assertFalse(self.log.exists(), result.stdout)
 
+
     def test_remote_dependency_install_changes_only_temporary_clone(self):
         self.env["TEST_PACKAGES"] = json.dumps([{"name": "vendor/library", "version": "1"}])
         before = self.snapshot()
@@ -417,6 +442,79 @@ class CliTest(unittest.TestCase):
         self.assertIn("vendor/library", result.stdout)
         self.assertTrue(any(c["args"][0] == "install" for c in self.calls("composer")))
         self.assertEqual(self.snapshot(), before)
+
+
+    def test_maximum_scans_downwards_and_stops_at_highest_pass(self):
+        self.env["TEST_FAILURE_VERSIONS"] = "8.5,8.4"
+        result = self.run_cli(".", "--max-php-version")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.3", result.stdout)
+        calls = self.calls("phpcs")
+        self.assertEqual([c["args"][c["args"].index("testVersion") + 1] for c in calls],
+                         ["8.5", "8.4", "8.3"])
+
+
+    def test_maximum_passing_ceiling_is_explicitly_bounded(self):
+        result = self.run_cli(".", "--max-php-version", "--to-php-version=8.4")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.4", result.stdout)
+        self.assertIn("No upper incompatibility found within the checked versions", result.stdout)
+        self.assertIn("higher versions were not checked", result.stdout)
+        self.assertEqual(len(self.calls("phpcs")), 1)
+
+
+    def test_shared_scan_bounds_and_no_compatible_version(self):
+        self.env["TEST_FAILURE_VERSIONS"] = "8.2"
+        result = self.run_cli(".", "--max-php-version", "--from-php-version=8.1", "--to-php-version=8.2")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.1", result.stdout)
+        result = self.run_cli(".", "--min-php-version", "--from-php-version=8.1", "--to-php-version=8.2")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Minimum supported PHP version: 8.1", result.stdout)
+        self.env["TEST_FAILURE_VERSIONS"] = "8.1,8.2"
+        result = self.run_cli(".", "--max-php-version", "--from-php-version=8.1", "--to-php-version=8.2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("No compatible PHP version found", result.stdout)
+
+
+    def test_search_rejects_invalid_bounds_and_conflicting_modes_before_scanning(self):
+        for args in (("--max-php-version", "--min-php-version"),
+                     ("--max-php-version", "8.1"), ("--to-php-version=8.2",),
+                     ("--max-php-version", "--to-php-version="),
+                     ("--max-php-version", "--from-php-version=8.3", "--to-php-version=8.2"),
+                     ("--max-php-version", "--from-php-version=9.0")):
+            with self.subTest(args=args):
+                result = self.run_cli(".", *args)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertFalse(self.log.exists(), result.stdout)
+
+
+    def test_maximum_explains_composer_bound_and_allows_ignoring_it(self):
+        self.write("composer.json", {"require": {"php": ">=8.0 <8.3"}})
+        result = self.run_cli(".", "--max-php-version")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.2", result.stdout)
+        self.assertIn("Versions outside Composer requirement >=8.0 <8.3 were excluded", result.stdout)
+        result = self.run_cli(".", "--max-php-version", "--ignore-composer-php-version")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.5", result.stdout)
+
+
+    def test_maximum_dependency_checks_preserve_local_files(self):
+        self.install([{"name": "vendor/older", "version": "1", "require": {"php": ">=8.0 <8.4"}}])
+        before = self.snapshot()
+        result = self.run_cli(".", "--max-php-version", "--check-deps=full")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Highest compatible PHP version checked: 8.3", result.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+
+    def test_wrapper_forwards_maximum_and_scan_bounds(self):
+        result = self.run_cli(".", "--max-php-version", "--from-php-version=8.0", "--to-php-version=8.4", wrapper=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls("docker")[-1]["args"][-4:],
+                         ["local:/project", "--max-php-version", "--from-php-version=8.0", "--to-php-version=8.4"])
+
 
 
 if __name__ == "__main__":

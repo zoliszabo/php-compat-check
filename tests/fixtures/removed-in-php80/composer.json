@@ -1,0 +1,5 @@
+{
+    "name": "fixture/removed-in-php80",
+    "require": {"php": ">=5.6"},
+    "autoload": {"psr-4": {"Fixture\\": "src/"}}
+}

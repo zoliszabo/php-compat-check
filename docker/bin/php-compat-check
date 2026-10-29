@@ -135,17 +135,30 @@ constraint_min_version() {
   "
 }
 
-filter_from_version() {
-  local from="$1"
-  local out=()
+select_mode() {
+  if [ "$MODE" != check ] && [ "$MODE" != "$1" ]; then
+    echo_error "Choose only one of --min-php-version or --max-php-version."
+    exit 1
+  fi
+  MODE="$1"
+}
 
+known_php_version() {
+  local v
   for v in "${PHP_VERSIONS[@]}"; do
-    if printf '%s\n%s\n' "$from" "$v" | sort -V | head -n1 | grep -q "$from"; then
-      out+=("$v")
-    fi
+    [ "$v" != "$1" ] || return 0
   done
+  return 1
+}
 
-  echo "${out[@]}"
+select_scan_versions() {
+  local v active=0
+  SCAN_PHP_VERSIONS=()
+  for v in "${PHP_VERSIONS[@]}"; do
+    [ "$v" != "$FROM_PHP_VERSION" ] || active=1
+    [ "$active" -eq 0 ] || SCAN_PHP_VERSIONS+=("$v")
+    [ "$v" != "$TO_PHP_VERSION" ] || break
+  done
 }
 
 # Read metadata rather than loading the project's autoloader or executing its code.
@@ -472,8 +485,9 @@ REPO=""
 REPO_VERSION=""
 PHP_VERSION=""
 CHECK_DEPS=""
-MIN_MODE=0
+MODE=check
 FROM_PHP_VERSION=""
+TO_PHP_VERSION=""
 IGNORE_COMPOSER_PHP_VERSION=0
 SHOW_DEPS=0
 SHOW_WARNINGS=0
@@ -502,10 +516,24 @@ for arg in "$@"; do
       fi
       ;;
     --min-php-version)
-      MIN_MODE=1
+      select_mode min
+      ;;
+    --max-php-version)
+      select_mode max
       ;;
     --from-php-version=*)
       FROM_PHP_VERSION="${arg#*=}"
+      if ! known_php_version "$FROM_PHP_VERSION"; then
+        echo_error "Unknown --from-php-version: $FROM_PHP_VERSION. Known versions: ${PHP_VERSIONS[*]}"
+        exit 1
+      fi
+      ;;
+    --to-php-version=*)
+      TO_PHP_VERSION="${arg#*=}"
+      if ! known_php_version "$TO_PHP_VERSION"; then
+        echo_error "Unknown --to-php-version: $TO_PHP_VERSION. Known versions: ${PHP_VERSIONS[*]}"
+        exit 1
+      fi
       ;;
     --ignore-composer-php-version)
       IGNORE_COMPOSER_PHP_VERSION=1
@@ -547,6 +575,25 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$MODE" != check ] && [ -n "$PHP_VERSION" ]; then
+  echo_error "A target PHP version cannot be combined with a version search."
+  exit 1
+fi
+if [ "$MODE" = check ] && { [ -n "$FROM_PHP_VERSION" ] || [ -n "$TO_PHP_VERSION" ]; }; then
+  echo_error "Scan bounds require --min-php-version or --max-php-version."
+  exit 1
+fi
+EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
+if [ "$MODE" != check ]; then
+  FROM_PHP_VERSION="${FROM_PHP_VERSION:-${PHP_VERSIONS[0]}}"
+  TO_PHP_VERSION="${TO_PHP_VERSION:-$MAX_PHP_VERSION}"
+  select_scan_versions
+  if [ ${#SCAN_PHP_VERSIONS[@]} -eq 0 ]; then
+    echo_error "--from-php-version must not exceed --to-php-version."
+    exit 1
+  fi
+fi
 
 ORIGINAL_REPO="$REPO"
 SOURCE_TYPE=""
@@ -686,7 +733,7 @@ BASE_PHPCS_STANDARDS="$PHPCS_STANDARDS"
 # -----------------------
 # NORMAL MODE
 # -----------------------
-if [ "$MIN_MODE" -eq 0 ]; then
+if [ "$MODE" = check ]; then
 
   if [ -z "$PHP_VERSION" ]; then
     resolve_php_version
@@ -705,9 +752,8 @@ if [ "$MIN_MODE" -eq 0 ]; then
 fi
 
 # -----------------------
-# MIN MODE
+# VERSION SEARCH
 # -----------------------
-EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
 
 php_constraint=""
 if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ -f composer.json ]; then
@@ -717,30 +763,45 @@ fi
 constraint_min=""
 if [ -n "$php_constraint" ]; then
   constraint_min=$(constraint_min_version "$php_constraint")
-  if [ -z "$FROM_PHP_VERSION" ]; then
-    FROM_PHP_VERSION="$constraint_min"
-  fi
 fi
 
-FROM_PHP_VERSION="${FROM_PHP_VERSION:-${PHP_VERSIONS[0]}}"
-
-FILTERED_PHP_VERSIONS=($(filter_from_version "$FROM_PHP_VERSION"))
-
-print_config "find minimum PHP version" "${FROM_PHP_VERSION} – ${MAX_PHP_VERSION}"
-
-echo_info "Finding minimum PHP version..."
+if [ "$MODE" = min ]; then
+  print_config "find minimum PHP version" "${FROM_PHP_VERSION} – ${TO_PHP_VERSION}"
+  echo_info "Finding minimum PHP version..."
+elif [ "$MODE" = max ]; then
+  print_config "find maximum PHP version" "${FROM_PHP_VERSION} – ${TO_PHP_VERSION}"
+  echo_info "Finding highest compatible PHP version..."
+  REVERSED_PHP_VERSIONS=()
+  for ((i=${#SCAN_PHP_VERSIONS[@]}-1; i>=0; i--)); do
+    REVERSED_PHP_VERSIONS+=("${SCAN_PHP_VERSIONS[$i]}")
+  done
+  SCAN_PHP_VERSIONS=("${REVERSED_PHP_VERSIONS[@]}")
+fi
 
 ignore_hint="Use --ignore-composer-php-version to scan without constraint filtering."
 
-for v in "${FILTERED_PHP_VERSIONS[@]}"; do
+for v in "${SCAN_PHP_VERSIONS[@]}"; do
   if [ -n "$php_constraint" ] && ! satisfies_php_constraint "$v" "$php_constraint"; then
     continue
   fi
-  if run_check "$v"; then
+  result=0
+  run_check "$v" || result=$?
+  if [ "$result" -eq 0 ]; then
     echo ""
-    echo_success "Minimum supported PHP version: $v"
-    if [ -n "$php_constraint" ] && { [ "$v" = "$constraint_min" ] || [ "$v" = "$EXPLICIT_FROM_PHP_VERSION" ]; }; then
-      echo_note "$ignore_hint"
+    if [ "$MODE" = min ]; then
+      echo_success "Minimum supported PHP version: $v"
+      if [ -n "$php_constraint" ] && { [ "$v" = "$constraint_min" ] || [ "$v" = "$EXPLICIT_FROM_PHP_VERSION" ]; }; then
+        echo_note "$ignore_hint"
+      fi
+    else
+      echo_success "Highest compatible PHP version checked: $v"
+      if [ "$v" = "$TO_PHP_VERSION" ]; then
+        echo_note "No upper incompatibility found within the checked versions."
+      fi
+      echo_note "Search limited to PHP $FROM_PHP_VERSION – $TO_PHP_VERSION; higher versions were not checked."
+      if [ -n "$php_constraint" ]; then
+        echo_note "Versions outside Composer requirement $php_constraint were excluded. $ignore_hint"
+      fi
     fi
     exit 0
   fi

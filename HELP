@@ -1,9 +1,10 @@
 Check PHP compatibility for a local project, Git repository, or Packagist package.
-Test a specific PHP version or find the minimum supported PHP version.
+Test a specific PHP version or find the lowest/highest compatible version checked.
 
 Usage:
   php-compat-check <source> <php-version> [options]
   php-compat-check <source> --min-php-version [options]
+  php-compat-check <source> --max-php-version [options]
   php-compat-check --help
   php-compat-check --version
 
@@ -22,7 +23,9 @@ Options:
                                      or branch; unavailable for local sources
   --version=<ref>                     Deprecated alias for --source-version
   --min-php-version                   Find the minimum compatible PHP version
-  --from-php-version=<version>        Set the lower bound for minimum detection
+  --max-php-version                   Find the highest compatible version checked
+  --from-php-version=<version>        Set the lower bound for a version search
+  --to-php-version=<version>          Set the upper bound for a version search
   --ignore-composer-php-version       Ignore the project's Composer PHP constraint
   --check-deps[=shallow|full]          Include production dependencies (default:
                                      shallow trusts compatible PHP requirements;
@@ -42,6 +45,7 @@ The wrapper uses Docker. Set PHP_COMPAT_CHECK_IMAGE to choose a different image.
 Examples:
   php-compat-check . 8.1
   php-compat-check . --min-php-version
+  php-compat-check . --max-php-version --to-php-version=8.4
   php-compat-check vendor/package:^6.0 8.1 --check-deps=full
   php-compat-check https://github.com/vendor/package 8.1 --source-version=v6.0.2
 
