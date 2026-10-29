@@ -4,7 +4,7 @@ Work through these in order, verifying each item before starting the next.
 
 1. [x] Add `--max-php-version` and `--to-php-version`, with shared scan bounds,
    Composer constraint handling, dependency checks, and bounded result wording.
-2. [ ] Add `--matrix` to report every known version within the requested bounds,
+2. [x] Add `--matrix` to report every known version within the requested bounds,
    including compatibility gaps and versions excluded by Composer constraints.
 3. [ ] Make exit codes consistent for local and remote sources and distinguish
    incompatibility from invalid input or failed analysis for CI.

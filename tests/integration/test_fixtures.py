@@ -152,6 +152,12 @@ class FixtureTest(unittest.TestCase):
                    contains=["Highest compatible PHP version checked: 8.2", "No upper incompatibility found"])
 
 
+    def test_matrix_reports_removed_function_across_versions(self):
+        self.use_fixture("removed-in-php80")
+        self.check(".", "--matrix", "--from-php-version=7.4", "--to-php-version=8.1", status=1,
+                   contains=["PHP 7.4  PASS", "PHP 8.0  FAIL", "PHP 8.1  FAIL"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

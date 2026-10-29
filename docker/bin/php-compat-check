@@ -137,7 +137,7 @@ constraint_min_version() {
 
 select_mode() {
   if [ "$MODE" != check ] && [ "$MODE" != "$1" ]; then
-    echo_error "Choose only one of --min-php-version or --max-php-version."
+    echo_error "Choose only one of --min-php-version, --max-php-version, or --matrix."
     exit 1
   fi
   MODE="$1"
@@ -521,6 +521,9 @@ for arg in "$@"; do
     --max-php-version)
       select_mode max
       ;;
+    --matrix)
+      select_mode matrix
+      ;;
     --from-php-version=*)
       FROM_PHP_VERSION="${arg#*=}"
       if ! known_php_version "$FROM_PHP_VERSION"; then
@@ -577,11 +580,11 @@ for arg in "$@"; do
 done
 
 if [ "$MODE" != check ] && [ -n "$PHP_VERSION" ]; then
-  echo_error "A target PHP version cannot be combined with a version search."
+  echo_error "A target PHP version cannot be combined with a version search or matrix."
   exit 1
 fi
 if [ "$MODE" = check ] && { [ -n "$FROM_PHP_VERSION" ] || [ -n "$TO_PHP_VERSION" ]; }; then
-  echo_error "Scan bounds require --min-php-version or --max-php-version."
+  echo_error "Scan bounds require --min-php-version, --max-php-version, or --matrix."
   exit 1
 fi
 EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
@@ -776,16 +779,32 @@ elif [ "$MODE" = max ]; then
     REVERSED_PHP_VERSIONS+=("${SCAN_PHP_VERSIONS[$i]}")
   done
   SCAN_PHP_VERSIONS=("${REVERSED_PHP_VERSIONS[@]}")
+else
+  print_config "compatibility matrix" "${FROM_PHP_VERSION} – ${TO_PHP_VERSION}"
 fi
 
 ignore_hint="Use --ignore-composer-php-version to scan without constraint filtering."
+MATRIX_ROWS=()
+checked_count=0
+failed_count=0
 
 for v in "${SCAN_PHP_VERSIONS[@]}"; do
   if [ -n "$php_constraint" ] && ! satisfies_php_constraint "$v" "$php_constraint"; then
+    MATRIX_ROWS+=("PHP $v  EXCLUDED (Composer requirement: $php_constraint)")
     continue
   fi
   result=0
   run_check "$v" || result=$?
+  checked_count=$((checked_count + 1))
+  if [ "$MODE" = matrix ]; then
+    if [ "$result" -eq 0 ]; then
+      MATRIX_ROWS+=("PHP $v  PASS")
+    else
+      MATRIX_ROWS+=("PHP $v  FAIL")
+      failed_count=$((failed_count + 1))
+    fi
+    continue
+  fi
   if [ "$result" -eq 0 ]; then
     echo ""
     if [ "$MODE" = min ]; then
@@ -806,6 +825,19 @@ for v in "${SCAN_PHP_VERSIONS[@]}"; do
     exit 0
   fi
 done
+
+if [ "$MODE" = matrix ]; then
+  echo ""
+  echo_info "Compatibility matrix:"
+  printf '%s\n' "${MATRIX_ROWS[@]}"
+  echo_note "Each version is checked independently; passing endpoints do not imply a compatible range."
+  if [ "$checked_count" -eq 0 ]; then
+    echo_error "No eligible PHP versions found in range. $ignore_hint"
+    exit 1
+  fi
+  [ "$failed_count" -eq 0 ] || exit 1
+  exit 0
+fi
 
 echo ""
 echo_error "No compatible PHP version found in range"

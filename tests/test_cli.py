@@ -516,6 +516,45 @@ class CliTest(unittest.TestCase):
                          ["local:/project", "--max-php-version", "--from-php-version=8.0", "--to-php-version=8.4"])
 
 
+    def test_matrix_reports_gaps_in_ascending_order(self):
+        self.env["TEST_FAILURE_VERSIONS"] = "8.0,8.2"
+        result = self.run_cli(".", "--matrix", "--from-php-version=8.0", "--to-php-version=8.3")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        rows = [line for line in result.stdout.splitlines() if line.startswith("PHP ")]
+        self.assertEqual(rows, ["PHP 8.0  FAIL", "PHP 8.1  PASS", "PHP 8.2  FAIL", "PHP 8.3  PASS"])
+        self.assertEqual(len(self.calls("phpcs")), 4)
+
+
+    def test_matrix_shows_composer_exclusions_without_scanning_them(self):
+        self.write("composer.json", {"require": {"php": ">=8.1 <8.3"}})
+        result = self.run_cli(".", "--matrix", "--from-php-version=8.0", "--to-php-version=8.3")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PHP 8.0  EXCLUDED (Composer requirement: >=8.1 <8.3)", result.stdout)
+        self.assertIn("PHP 8.3  EXCLUDED", result.stdout)
+        self.assertEqual(len(self.calls("phpcs")), 2)
+        result = self.run_cli(".", "--matrix", "--from-php-version=8.0", "--to-php-version=8.3", "--ignore-composer-php-version")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("PHP 8.0  FAIL", result.stdout)
+
+
+    def test_matrix_without_eligible_versions_is_not_a_success(self):
+        self.write("composer.json", {"require": {"php": ">=9.0"}})
+        result = self.run_cli(".", "--matrix", "--from-php-version=8.0")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("No eligible PHP versions", result.stdout)
+        self.assertEqual(self.calls("phpcs"), [])
+
+
+    def test_matrix_rejects_conflicting_mode_and_is_forwarded_by_wrapper(self):
+        result = self.run_cli(".", "--matrix", "--max-php-version")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertFalse(self.log.exists())
+        result = self.run_cli(".", "--matrix", "--from-php-version=8.0", wrapper=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls("docker")[-1]["args"][-3:],
+                         ["local:/project", "--matrix", "--from-php-version=8.0"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

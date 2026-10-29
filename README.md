@@ -1,6 +1,6 @@
 # php-compat-check
 
-A CLI tool for checking PHP version compatibility, finding compatible version bounds for Composer-based projects.
+A CLI tool for checking PHP version compatibility, finding compatible version bounds, and reporting compatibility matrices for Composer-based projects.
 
 It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependencies to provide more realistic results.
 
@@ -9,6 +9,7 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 - Check compatibility against a specific PHP version
 - Automatically detect the minimum supported PHP version
 - Find the highest compatible PHP version within a bounded search
+- Report compatibility per PHP version, including gaps and Composer exclusions
 - Optional dependency-aware analysis using Composer
 - Accepts a local directory, Git repository URL, or Packagist package name (`vendor/package[:version]`)
 - Checks local working files and installed dependencies without modifying the project
@@ -93,6 +94,15 @@ Checks known PHP versions from newest to oldest and stops at the first passing v
 
 The result is the **highest compatible version checked**, rather than a promise about future PHP releases or every version below it. When the search ceiling passes, the output explicitly says that no upper incompatibility was found within the checked versions. Composer constraints filter the search by default, and the output explains their effect; use `--ignore-composer-php-version` to investigate source compatibility beyond the declared constraints. Dependency modes behave as described below. Static analysis can miss runtime issues and does not cover every PHP change.
 
+### Compatibility matrix
+
+```bash
+php-compat-check . --matrix --from-php-version=8.0 --to-php-version=8.5
+php-compat-check . --matrix --check-deps=full
+```
+
+Checks every known version in the bounded range independently, then prints `PASS`, `FAIL`, or `EXCLUDED` for each version. Composer exclusions are shown explicitly and are not counted as checked versions; use `--ignore-composer-php-version` to scan them too. A matrix succeeds when at least one version was checked and every checked version passes. Compatibility gaps remain visible, so passing endpoints never imply support for all intervening versions. Choose one of minimum search, maximum search, or matrix mode per invocation.
+
 ### Scanning dependencies
 
 ```bash
@@ -127,8 +137,9 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--check-deps[=shallow\|full]` | Check production dependencies: install them for remote sources, or use the installed set for local sources. Defaults to `shallow`. |
 | `--min-php-version` | Find the minimum compatible PHP version |
 | `--max-php-version` | Find the highest compatible PHP version within the checked range |
-| `--from-php-version=<version>` | Set the lower bound for a version search |
-| `--to-php-version=<version>` | Set the upper bound for a version search |
+| `--matrix` | Check every version in the selected range and show PASS/FAIL/EXCLUDED |
+| `--from-php-version=<version>` | Set the lower bound for a version search or matrix |
+| `--to-php-version=<version>` | Set the upper bound for a version search or matrix |
 | `--ignore-composer-php-version` | Ignore `require.php` from `composer.json` when determining the scan range, filtering versions, or setting the platform version |
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
 | `--show-deps` | With `--check-deps`, print installed production dependencies and their scan status (`checked`, `trusted`, `ignored`, or locally `incompatible`) |
