@@ -6,7 +6,7 @@ Work through these in order, verifying each item before starting the next.
    Composer constraint handling, dependency checks, and bounded result wording.
 2. [x] Add `--matrix` to report every known version within the requested bounds,
    including compatibility gaps and versions excluded by Composer constraints.
-3. [ ] Make exit codes consistent for local and remote sources and distinguish
+3. [x] Make exit codes consistent for local and remote sources and distinguish
    incompatibility from invalid input or failed analysis for CI.
 4. [ ] Add `--format=json` for checks, minimum/maximum searches, and matrices,
    including structured results, diagnostics, and coverage metadata.

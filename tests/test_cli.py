@@ -25,11 +25,16 @@ args = sys.argv[1:]
 with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "cwd": os.getcwd()}) + "\n")
 if name == "docker":
-    pass
+    if args[0] == "run":
+        sys.exit(int(os.environ.get("TEST_DOCKER_EXIT", "0")))
 elif name == "composer":
     if args == ["config", "--global", "home"]:
         print(os.environ["TEST_COMPOSER_HOME"])
     elif args[0] == "install":
+        failure = int(os.environ.get("TEST_COMPOSER_EXIT", "0"))
+        if failure:
+            print("Dependency resolution failed" if failure == 2 else "Network unavailable")
+            sys.exit(failure)
         packages = json.loads(os.environ.get("TEST_PACKAGES", "[]"))
         pathlib.Path("composer.lock").write_text(json.dumps({"packages": packages}))
         for package in packages:
@@ -51,17 +56,23 @@ elif name == "curl":
                                  "versions": {"v1.0.0": {}, "v1.2.0": {}, "dev-main": {}}}}))
 elif name == "phpcs":
     target = args[args.index("testVersion") + 1]
+    output = os.environ.get("TEST_SCANNER_OUTPUT", "valid")
+    if output != "valid":
+        print({"empty": "", "garbage": "bad report", "incomplete": "{}"}[output])
+        sys.exit(1)
     failures = os.environ.get("TEST_FAILURE_VERSIONS")
     errors = int(target in failures.split(",")) if failures is not None else int(tuple(map(int, target.split("."))) < (8, 1))
-    print(json.dumps({"totals": {"errors": errors, "warnings": 0}, "files": {}}))
-    sys.exit(errors)
+    warnings = int(os.environ.get("TEST_WARNINGS", "0"))
+    files = {}
+    print(json.dumps({"totals": {"errors": errors, "warnings": warnings}, "files": files}))
+    sys.exit(int(os.environ.get("TEST_SCANNER_EXIT", str(errors))))
 '''
 
 
 class HelpTest(unittest.TestCase):
     def check_help(self, script):
         for args, status in ((("--help",), 0), (("-h",), 0),
-                             ((".", "8.1", "--help"), 0), ((), 1)):
+                             ((".", "8.1", "--help"), 0), ((), 2)):
             with self.subTest(script=script, args=args):
                 result = subprocess.run(
                     [shutil.which("bash"), str(script), *args],
@@ -224,7 +235,7 @@ class CliTest(unittest.TestCase):
                              ("https://example.test/repo", "8.1", option)):
                     with self.subTest(wrapper=wrapper, args=args):
                         result = self.run_cli(*args, wrapper=wrapper)
-                        self.assertEqual(result.returncode, 1, result.stdout)
+                        self.assertEqual(result.returncode, 2, result.stdout)
                         self.assertIn(f"Unknown option: {option}", result.stdout)
                         self.assertFalse(self.log.exists(), result.stdout)
 
@@ -429,7 +440,7 @@ class CliTest(unittest.TestCase):
                      ("vendor/package", "--version=v2", "--source-version=v1")):
             with self.subTest(args=args):
                 result = self.run_cli(*args)
-                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(result.returncode, 2, result.stdout)
                 self.assertIn("[ERROR]", result.stdout)
                 self.assertFalse(self.log.exists(), result.stdout)
 
@@ -485,7 +496,7 @@ class CliTest(unittest.TestCase):
                      ("--max-php-version", "--from-php-version=9.0")):
             with self.subTest(args=args):
                 result = self.run_cli(".", *args)
-                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(result.returncode, 2, result.stdout)
                 self.assertFalse(self.log.exists(), result.stdout)
 
 
@@ -547,12 +558,80 @@ class CliTest(unittest.TestCase):
 
     def test_matrix_rejects_conflicting_mode_and_is_forwarded_by_wrapper(self):
         result = self.run_cli(".", "--matrix", "--max-php-version")
-        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.returncode, 2, result.stdout)
         self.assertFalse(self.log.exists())
         result = self.run_cli(".", "--matrix", "--from-php-version=8.0", wrapper=True)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.calls("docker")[-1]["args"][-3:],
                          ["local:/project", "--matrix", "--from-php-version=8.0"])
+
+
+    def test_remote_incompatibility_returns_failure_for_every_source_syntax(self):
+        for source in ("https://example.test/repo", "repo:https://example.test/repo", "vendor/package"):
+            with self.subTest(source=source):
+                result = self.run_cli(source, "8.0")
+                self.assertEqual(result.returncode, 1, result.stdout)
+
+
+    def test_unreliable_scanner_output_aborts_every_mode(self):
+        modes = (("8.1",), ("--min-php-version",), ("--max-php-version",), ("--matrix",))
+        for output in ("empty", "garbage", "incomplete"):
+            self.env["TEST_SCANNER_OUTPUT"] = output
+            for mode in modes:
+                with self.subTest(output=output, mode=mode):
+                    before = len(self.calls("phpcs"))
+                    args = () if mode == ("8.1",) else ("--from-php-version=8.1", "--to-php-version=8.2")
+                    result = self.run_cli(".", *mode, *args)
+                    self.assertEqual(result.returncode, 2, result.stdout)
+                    self.assertIn("invalid report", result.stdout)
+                    self.assertEqual(len(self.calls("phpcs")) - before, 1)
+
+
+    def test_scanner_runtime_failures_are_not_compatibility_findings(self):
+        self.env["TEST_SCANNER_EXIT"] = "16"
+        result = self.run_cli(".", "8.1")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.env["TEST_SCANNER_EXIT"] = "1"
+        result = self.run_cli(".", "8.1")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("failed without reporting findings", result.stdout)
+
+
+    def test_deprecation_warnings_alone_do_not_fail_checks(self):
+        self.env["TEST_WARNINGS"] = "2"
+        self.env["TEST_SCANNER_EXIT"] = "2"
+        for flags in ((), ("--show-warnings",)):
+            result = self.run_cli(".", "8.1", *flags)
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+
+    def test_composer_solver_and_operational_errors_have_distinct_exit_codes(self):
+        for composer_exit, expected in (("2", 1), ("1", 2)):
+            self.env["TEST_COMPOSER_EXIT"] = composer_exit
+            result = self.run_cli("repo:https://example.test/repo", "8.1", "--check-deps=full")
+            self.assertEqual(result.returncode, expected, result.stdout)
+
+
+    def test_invalid_project_metadata_cannot_be_reported_as_compatible(self):
+        for contents in ("", "bad json", "[]", '{"require":{"php":"not a constraint"}}'):
+            (self.project / "composer.json").write_text(contents)
+            result = self.run_cli(".", "8.1")
+            self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertEqual(self.calls("phpcs"), [])
+
+
+    def test_wrapper_normalizes_docker_failures_and_preserves_check_status(self):
+        for docker_exit, expected in (("1", 1), ("2", 2), ("125", 2)):
+            self.env["TEST_DOCKER_EXIT"] = docker_exit
+            result = self.run_cli(".", "8.1", wrapper=True)
+            self.assertEqual(result.returncode, expected, result.stdout)
+
+
+    def test_unknown_target_and_extra_positionals_fail_before_external_commands(self):
+        for args in ((".", "9.0"), (".", "8.1", "extra")):
+            result = self.run_cli(*args)
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertFalse(self.log.exists())
 
 
 

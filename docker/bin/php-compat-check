@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -e
+trap 'exit 2' ERR
 
 SCRIPT_PATH=${BASH_SOURCE[0]}
 [[ "$SCRIPT_PATH" == */* ]] || SCRIPT_PATH="./$SCRIPT_PATH"
@@ -58,7 +59,7 @@ resolve_php_version() {
   echo "Please provide: <php-version>"
   echo ""
 
-  exit 1
+  exit 2
 }
 
 
@@ -113,32 +114,38 @@ detect_polyfill_standards() {
 }
 
 satisfies_php_constraint() {
-  local version="$1"
-  local constraint="$2"
-  php -r "
-    require '$COMPOSER_HOME/vendor/autoload.php';
-    use Composer\Semver\Semver;
-    exit(Semver::satisfies('$version', '$constraint') ? 0 : 1);
-  "
+  php -r '
+    require $argv[1] . "/vendor/autoload.php";
+    exit(Composer\Semver\Semver::satisfies($argv[2], $argv[3]) ? 0 : 1);
+  ' "$COMPOSER_HOME" "$1" "$2"
 }
 
 constraint_min_version() {
-  local constraint="$1"
   local versions_json
-  versions_json=$(printf '"%s",' "${PHP_VERSIONS[@]}" | sed 's/,$//')
-  php -r "
-    require '$COMPOSER_HOME/vendor/autoload.php';
-    use Composer\Semver\Semver;
-    \$satisfying = Semver::satisfiedBy([$versions_json], '$constraint');
-    \$sorted = Semver::sort(\$satisfying);
-    echo \$sorted[0] ?? '';
-  "
+  versions_json=$(printf '%s\n' "${PHP_VERSIONS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  php -r '
+    require $argv[1] . "/vendor/autoload.php";
+    $matching = Composer\Semver\Semver::satisfiedBy(json_decode($argv[2], true), $argv[3]);
+    $sorted = Composer\Semver\Semver::sort($matching);
+    echo $sorted[0] ?? "";
+  ' "$COMPOSER_HOME" "$versions_json" "$1"
+}
+
+validate_php_constraints() {
+  php -r '
+    require $argv[1] . "/vendor/autoload.php";
+    $parser = new Composer\Semver\VersionParser();
+    foreach (json_decode(stream_get_contents(STDIN), true) as $constraint) {
+        if (!is_string($constraint)) exit(1);
+        if ($constraint !== "") $parser->parseConstraints($constraint);
+    }
+  ' "$COMPOSER_HOME"
 }
 
 select_mode() {
   if [ "$MODE" != check ] && [ "$MODE" != "$1" ]; then
     echo_error "Choose only one of --min-php-version, --max-php-version, or --matrix."
-    exit 1
+    exit 2
   fi
   MODE="$1"
 }
@@ -191,7 +198,8 @@ load_local_dependencies() {
 
   # Composer 2 identifies dev-only packages; Composer 1 can use the lock file.
   local installed_packages
-  if ! installed_packages=$(jq -ce '
+  if ! installed_packages=$(jq -cse '
+    if length == 1 then .[0] else error("Expected one metadata document") end |
     if type == "array" then .
     elif (.packages | type) == "array" then .packages
     else error("Invalid installed package metadata") end
@@ -209,6 +217,10 @@ load_local_dependencies() {
   DEPENDENCY_PACKAGES=$(jq -c --argjson dev "$dev_json" '
     [.[] | select(.name as $name | $dev | index($name) | not)]
   ' <<< "$installed_packages")
+  if ! jq -c '[.[].require.php // ""]' <<< "$DEPENDENCY_PACKAGES" | validate_php_constraints; then
+    echo_error "Invalid PHP requirement in installed dependency metadata."
+    return 1
+  fi
 
   if ! php -r '
     $root = is_file("composer.json") ? json_decode(file_get_contents("composer.json"), true) : [];
@@ -295,27 +307,44 @@ run_check() {
     fi
   fi
 
+  if [ "$php_constraint_fails" -eq 1 ]; then
+    echo_error "PHP $version does not satisfy the project's requirement: $php_constraint_value"
+    echo_note "Use --ignore-composer-php-version to bypass this check."
+    return 1
+  fi
+
   if [ -n "$CHECK_DEPS" ]; then
     if [ "$SOURCE_TYPE" != "local" ]; then
+      DEPENDENCY_PACKAGES='[]'
       rm -rf vendor composer.lock
 
-      jq 'del(.["require-dev"], .["autoload-dev"])' composer.json > composer.tmp.json && mv composer.tmp.json composer.json
-
-      if [ "$IGNORE_COMPOSER_PHP_VERSION" -eq 0 ] && [ "$php_constraint_fails" -eq 0 ]; then
-        composer config platform.php "$version"
-      fi
+      jq --argjson ignore "$IGNORE_COMPOSER_PHP_VERSION" '
+        del(.["require-dev"], .["autoload-dev"]) |
+        if $ignore == 1 then del(.require.php) else . end
+      ' composer.json > composer.tmp.json || return 2
+      mv composer.tmp.json composer.json || return 2
+      composer config platform.php "$version" || return 2
 
       local composer_output
-      if ! composer_output=$(composer install \
+      local composer_status=0
+      composer_output=$(composer install \
         --no-interaction \
         --no-progress \
         --prefer-dist \
-        --no-scripts 2>&1); then
+        --no-dev --no-plugins --no-scripts 2>&1) || composer_status=$?
+      if [ "$composer_status" -ne 0 ]; then
         echo_error "Composer failed"
         echo "$composer_output"
-        return 1
+        if [ "$composer_status" -eq 2 ]; then
+          return 1
+        fi
+        return 2
       fi
-      DEPENDENCY_PACKAGES=$(jq -c '.packages // []' composer.lock)
+      DEPENDENCY_PACKAGES=$(jq -ce '.packages | select(type == "array")' composer.lock) || return 2
+      if ! jq -c '[.[].require.php // ""]' <<< "$DEPENDENCY_PACKAGES" | validate_php_constraints; then
+        echo_error "Invalid PHP requirement in resolved dependency metadata."
+        return 2
+      fi
     fi
 
     local lock_packages
@@ -400,12 +429,6 @@ run_check() {
 
   fi
 
-  if [ "$php_constraint_fails" -eq 1 ]; then
-    echo_error "PHP $version does not satisfy the project's requirement: $php_constraint_value"
-    echo_note "Use --ignore-composer-php-version to bypass this check."
-    return 1
-  fi
-
   echo ""
   if [ "$dependency_constraint_fails" -eq 1 ]; then
     echo_error "Not compatible with PHP $version (installed dependency requirements)"
@@ -424,13 +447,30 @@ run_check() {
     --runtime-set testVersion "$target"
   )
 
-  local tmpjson
-  tmpjson=$(mktemp)
-  phpcs --report=json "${phpcs_args[@]}" > "$tmpjson" 2>/dev/null || true
+  local tmpjson tmperrors scanner_status=0
+  tmpjson=$(mktemp) || return 2
+  tmperrors=$(mktemp) || { rm -f "$tmpjson"; return 2; }
+  phpcs --report=json "${phpcs_args[@]}" > "$tmpjson" 2>"$tmperrors" || scanner_status=$?
+
+  if [ "$scanner_status" -gt 3 ] || ! jq -se '
+    length == 1 and (.[0] | type == "object" and (.files | type == "object") and
+    (.totals.errors | type == "number" and . >= 0 and . == floor) and
+    (.totals.warnings | type == "number" and . >= 0 and . == floor))
+  ' "$tmpjson" >/dev/null 2>&1; then
+    echo_error "PHP_CodeSniffer failed or returned an invalid report for PHP $version."
+    cat "$tmperrors" >&2
+    rm -f "$tmpjson" "$tmperrors"
+    return 2
+  fi
 
   local phpcs_errors phpcs_warnings
-  phpcs_errors=$(jq '.totals.errors // 0' "$tmpjson" 2>/dev/null || echo 1)
-  phpcs_warnings=$(jq '.totals.warnings // 0' "$tmpjson" 2>/dev/null || echo 0)
+  phpcs_errors=$(jq '.totals.errors' "$tmpjson")
+  phpcs_warnings=$(jq '.totals.warnings' "$tmpjson")
+  if [ "$scanner_status" -ne 0 ] && [ "$phpcs_errors" -eq 0 ] && [ "$phpcs_warnings" -eq 0 ]; then
+    echo_error "PHP_CodeSniffer failed without reporting findings for PHP $version."
+    rm -f "$tmpjson" "$tmperrors"
+    return 2
+  fi
 
   if [ "$verbose" -eq 1 ]; then
     php -r "
@@ -464,7 +504,7 @@ run_check() {
     fi
   fi
 
-  rm -f "$tmpjson"
+  rm -f "$tmpjson" "$tmperrors"
   local result
   [ "${phpcs_errors:-1}" -gt 0 ] && result=1 || result=0
 
@@ -512,7 +552,7 @@ for arg in "$@"; do
         CHECK_DEPS="$val"
       else
         echo_error "Invalid --check-deps value: '$val'. Use 'shallow' or 'full'."
-        exit 1
+        exit 2
       fi
       ;;
     --min-php-version)
@@ -528,14 +568,14 @@ for arg in "$@"; do
       FROM_PHP_VERSION="${arg#*=}"
       if ! known_php_version "$FROM_PHP_VERSION"; then
         echo_error "Unknown --from-php-version: $FROM_PHP_VERSION. Known versions: ${PHP_VERSIONS[*]}"
-        exit 1
+        exit 2
       fi
       ;;
     --to-php-version=*)
       TO_PHP_VERSION="${arg#*=}"
       if ! known_php_version "$TO_PHP_VERSION"; then
         echo_error "Unknown --to-php-version: $TO_PHP_VERSION. Known versions: ${PHP_VERSIONS[*]}"
-        exit 1
+        exit 2
       fi
       ;;
     --ignore-composer-php-version)
@@ -557,35 +597,42 @@ for arg in "$@"; do
       val="${arg#*=}"
       if [ -z "$val" ]; then
         echo_error "--source-version requires a non-empty version."
-        exit 1
+        exit 2
       fi
       if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$val" ]; then
         echo_error "Conflicting source versions: '$REPO_VERSION' and '$val'."
-        exit 1
+        exit 2
       fi
       REPO_VERSION="${arg#*=}"
       ;;
     -*)
       echo_error "Unknown option: $arg"
-      exit 1
+      exit 2
       ;;
     *)
       if [ -z "$REPO" ]; then
         REPO="$arg"
       elif [ -z "$PHP_VERSION" ]; then
         PHP_VERSION="$arg"
+      else
+        echo_error "Unexpected argument: $arg"
+        exit 2
       fi
       ;;
   esac
 done
 
+if [ -n "$PHP_VERSION" ] && ! known_php_version "$PHP_VERSION"; then
+  echo_error "Unknown target PHP version: $PHP_VERSION. Known versions: ${PHP_VERSIONS[*]}"
+  exit 2
+fi
 if [ "$MODE" != check ] && [ -n "$PHP_VERSION" ]; then
   echo_error "A target PHP version cannot be combined with a version search or matrix."
-  exit 1
+  exit 2
 fi
 if [ "$MODE" = check ] && { [ -n "$FROM_PHP_VERSION" ] || [ -n "$TO_PHP_VERSION" ]; }; then
   echo_error "Scan bounds require --min-php-version, --max-php-version, or --matrix."
-  exit 1
+  exit 2
 fi
 EXPLICIT_FROM_PHP_VERSION="$FROM_PHP_VERSION"
 if [ "$MODE" != check ]; then
@@ -594,7 +641,7 @@ if [ "$MODE" != check ]; then
   select_scan_versions
   if [ ${#SCAN_PHP_VERSIONS[@]} -eq 0 ]; then
     echo_error "--from-php-version must not exceed --to-php-version."
-    exit 1
+    exit 2
   fi
 fi
 
@@ -614,14 +661,14 @@ if [ "$SOURCE_TYPE" != "local" ] && [ "$SOURCE_TYPE" != "repository" ] && [[ "$R
   REPO="${REPO%%:*}"
   if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$COLON_VERSION" ]; then
     echo_error "Conflicting versions: ':' syntax specifies '$COLON_VERSION' but --source-version specifies '$REPO_VERSION'."
-    exit 1
+    exit 2
   fi
   REPO_VERSION="$COLON_VERSION"
 fi
 
 if [ -z "$REPO" ]; then
   print_help
-  exit 1
+  exit 2
 fi
 
 if [ -z "$SOURCE_TYPE" ]; then
@@ -635,27 +682,33 @@ fi
 if [ "$SOURCE_TYPE" = "local" ]; then
   if [ ! -d "$REPO" ]; then
     echo_error "Local directory not found: $REPO"
-    exit 1
+    exit 2
   fi
   if [ -n "$REPO_VERSION" ]; then
     echo_error "--source-version is not supported for local projects; the current files are scanned."
-    exit 1
+    exit 2
   fi
 fi
 
 COMPOSER_HOME=$(composer config --global home 2>/dev/null)
+for required_command in php jq phpcs; do
+  if ! command -v "$required_command" >/dev/null; then
+    echo_error "Required command is unavailable: $required_command"
+    exit 2
+  fi
+done
 
 # Resolve Packagist shorthand (vendor/package) to actual repository URL
 if [ "$SOURCE_TYPE" = "package" ]; then
   if [[ ! "$REPO" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
     echo_error "Invalid Packagist package: $REPO"
-    exit 1
+    exit 2
   fi
   echo_info "Resolving Packagist package: $REPO..."
   PACKAGIST_JSON=$(curl -sf "https://packagist.org/packages/${REPO}.json" 2>/dev/null || true)
   if [ -z "$PACKAGIST_JSON" ]; then
     echo_error "Could not resolve '$REPO' via Packagist. Is it a valid package name?"
-    exit 1
+    exit 2
   fi
 
   if [ -n "$REPO_VERSION" ] && [[ ! "$REPO_VERSION" =~ ^dev- ]]; then
@@ -670,14 +723,14 @@ if [ "$SOURCE_TYPE" = "package" ]; then
     ")
     if [ -z "$REPO_VERSION" ]; then
       echo_error "No matching version found for constraint '$COLON_VERSION'."
-      exit 1
+      exit 2
     fi
   fi
 
   REPO=$(echo "$PACKAGIST_JSON" | jq -r '.package.repository // empty' 2>/dev/null || true)
   if [ -z "$REPO" ]; then
     echo_error "Could not find repository URL for package in Packagist response."
-    exit 1
+    exit 2
   fi
 fi
 
@@ -699,7 +752,7 @@ else
   fi
   if ! git clone "${CLONE_ARGS[@]}" "$REPO" "$PROJECT_DIR" >/dev/null 2>&1; then
     echo_error "Failed to clone repository: $REPO"
-    exit 1
+    exit 2
   fi
   CLONED_VERSION=$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null || true)
   if [ -z "$CLONED_VERSION" ]; then
@@ -709,13 +762,24 @@ else
   CLONED_HASH=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)
 fi
 cd "$PROJECT_DIR"
+if [ -f composer.json ]; then
+  if ! jq -se 'length == 1 and (.[0] | type == "object" and ((.require // {}) | type == "object") and
+    ((.autoload // {}) | type == "object") and ((.require.php // "") | type == "string"))' composer.json >/dev/null 2>&1; then
+    echo_error "Invalid composer.json; expected an object with valid require and autoload fields."
+    exit 2
+  fi
+  if ! jq -c '[.require.php // ""]' composer.json | validate_php_constraints; then
+    echo_error "Invalid Composer PHP constraint."
+    exit 2
+  fi
+fi
 if [ ${#SCAN_DIRS[@]} -eq 0 ]; then
   mapfile -t SCAN_DIRS < <(detect_scan_dirs)
 fi
 DEPENDENCY_PACKAGES='[]'
 LOCAL_DEV_PACKAGES=()
 if [ "$SOURCE_TYPE" = "local" ] && [ -n "$CHECK_DEPS" ]; then
-  load_local_dependencies || exit 1
+  load_local_dependencies || exit 2
   echo_info "Using installed local dependencies; no dependencies will be installed or updated."
 fi
 if [ -n "$CHECK_DEPS" ] && { [ "$SOURCE_TYPE" != "local" ] || [ -d vendor ]; } && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
@@ -747,11 +811,7 @@ if [ "$MODE" = check ]; then
   result=0
   run_check "$PHP_VERSION" 1 || result=$?
 
-  # Keep the historical remote exit behavior; local checks return their result.
-  if [ "$SOURCE_TYPE" = "local" ]; then
-    exit "$result"
-  fi
-  exit 0
+  exit "$result"
 fi
 
 # -----------------------
@@ -795,6 +855,10 @@ for v in "${SCAN_PHP_VERSIONS[@]}"; do
   fi
   result=0
   run_check "$v" || result=$?
+  if [ "$result" -gt 1 ]; then
+    echo_error "Analysis failed for PHP $v; the version search cannot be completed."
+    exit 2
+  fi
   checked_count=$((checked_count + 1))
   if [ "$MODE" = matrix ]; then
     if [ "$result" -eq 0 ]; then

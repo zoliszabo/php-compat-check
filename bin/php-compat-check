@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -e
+trap 'exit 2' ERR
 
 SCRIPT_PATH=${BASH_SOURCE[0]}
 [[ "$SCRIPT_PATH" == */* ]] || SCRIPT_PATH="./$SCRIPT_PATH"
@@ -27,7 +28,7 @@ print_help() {
 
 if [ "$#" -eq 0 ]; then
   print_help
-  exit 1
+  exit 2
 fi
 
 # Reject unknown options before invoking Docker, regardless of argument order.
@@ -51,7 +52,7 @@ for i in "${!ARGS[@]}"; do
     --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--source-version=*) ;;
     -*)
       echo_error "Unknown option: $arg"
-      exit 1
+      exit 2
       ;;
   esac
 done
@@ -59,7 +60,7 @@ done
 # Detect Docker
 if ! command -v docker >/dev/null 2>&1; then
   echo_error "Docker is not installed or not in PATH."
-  exit 1
+  exit 2
 fi
 
 # Handle upgrade flag
@@ -82,7 +83,7 @@ for i in "${!ARGS[@]}"; do
   esac
   if [ -z "$local_path" ] || [ ! -d "$local_path" ]; then
     echo_error "Local directory not found: $local_path"
-    exit 1
+    exit 2
   fi
   local_path=$(cd -- "$local_path" && pwd -P)
   MOUNT_ARGS=(-v "$local_path:/project:ro" -w /project)
@@ -97,7 +98,12 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # Local sources are mounted read-only, even when dependency checks are requested.
-exec docker run --rm \
+result=0
+docker run --rm \
   "${MOUNT_ARGS[@]}" \
   "$IMAGE" \
-  php-compat-check "${ARGS[@]}"
+  php-compat-check "${ARGS[@]}" || result=$?
+case "$result" in
+  0|1|2) exit "$result" ;;
+  *) exit 2 ;;
+esac

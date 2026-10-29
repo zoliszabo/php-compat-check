@@ -52,5 +52,10 @@ Examples:
   php-compat-check vendor/package:^6.0 8.1 --check-deps=full
   php-compat-check https://github.com/vendor/package 8.1 --source-version=v6.0.2
 
+Exit codes:
+  0  Check passed, a search found a compatible version, or all checked matrix rows passed
+  1  Incompatible target, unsuccessful search, or a failing matrix
+  2  Invalid input or analysis could not be completed
+
 For a complete overview, see:
   https://github.com/zoliszabo/php-compat-check#readme

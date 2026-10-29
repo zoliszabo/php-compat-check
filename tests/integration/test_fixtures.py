@@ -137,7 +137,7 @@ class FixtureTest(unittest.TestCase):
     def test_missing_dependencies_are_reported_without_installing(self):
         self.use_fixture("missing-dependencies")
         self.check(".", "7.4", contains=["Compatible with PHP 7.4"])
-        self.check(".", "7.4", "--check-deps", status=1,
+        self.check(".", "7.4", "--check-deps", status=2,
                    contains=["Installed dependency metadata not found", "Run Composer install"])
 
 

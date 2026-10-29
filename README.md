@@ -20,7 +20,7 @@ It uses PHPCompatibility (PHP_CodeSniffer) and can optionally install dependenci
 
 ## Usage
 
-Run `php-compat-check --help` (or `-h`) for a description, supported sources, options, and examples. Help works without Docker or Composer. Running without arguments also displays help and exits with status 1.
+Run `php-compat-check --help` (or `-h`) for a description, supported sources, options, and examples. Help works without Docker or Composer. Running without arguments also displays help and exits with status 2.
 
 ### Basic compatibility check
 
@@ -140,7 +140,7 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--matrix` | Check every version in the selected range and show PASS/FAIL/EXCLUDED |
 | `--from-php-version=<version>` | Set the lower bound for a version search or matrix |
 | `--to-php-version=<version>` | Set the upper bound for a version search or matrix |
-| `--ignore-composer-php-version` | Ignore `require.php` from `composer.json` when determining the scan range, filtering versions, or setting the platform version |
+| `--ignore-composer-php-version` | Ignore the root project's `require.php` when filtering or validating targets; dependency checks still use the target PHP platform |
 | `--scan-dirs=<dirs>` | Comma-separated list of directories/files to scan (default: resolved from `composer.json` autoload) |
 | `--show-deps` | With `--check-deps`, print installed production dependencies and their scan status (`checked`, `trusted`, `ignored`, or locally `incompatible`) |
 | `--show-warnings` | Display PHPCompatibility warnings in addition to errors (warnings are hidden by default) |
@@ -181,6 +181,34 @@ php-compat-check sebastian/diff 8.1 --check-deps --show-deps
 # Scan specific directories
 php-compat-check sebastian/diff 8.1 --scan-dirs=src,lib
 ```
+
+### Exit codes for automation
+
+| Code | Meaning |
+|------|---------|
+| `0` | Compatible target, a successful minimum/maximum search, or a matrix whose checked versions all pass |
+| `1` | Incompatible target, no compatible version found, or a matrix with failures/no eligible versions |
+| `2` | Invalid input or incomplete analysis, such as missing local dependencies, a network failure, or a failed scanner |
+
+Local directories, repository URLs, and Packagist packages use the same exit codes. **Migration note:** older versions returned `0` for completed remote-source checks even when incompatibilities were found. CI scripts should now handle a failing check explicitly. Deprecation warnings remain informational, including with `--show-warnings`.
+
+Version searches stop on operational failures instead of presenting an unreliable bound. A Composer dependency-solving failure counts as an incompatible target; other Composer failures prevent analysis. Unknown target versions are rejected because scanner coverage cannot be inferred for them.
+
+## How it works
+
+1. Resolves the source type from an explicit prefix or the package/URL/path syntax
+2. Resolves Packagist packages to Git URLs and clones remote repositories into a temporary directory; local directories are mounted read-only instead
+3. Detects scan directories from `composer.json` autoload (`psr-4`, `psr-0`, `classmap`, `files`); falls back to `.`
+4. When `--check-deps` is set: for remote sources, strips `require-dev` and `autoload-dev`, simulates the target PHP platform version, and installs non-dev dependencies; for local sources, reads installed production dependency metadata
+5. Validates the requested version (or scanned range) against `composer.json`'s `require.php` constraint using Composer's semver library, unless `--ignore-composer-php-version` is set
+6. Auto-detects polyfill libraries and applies the appropriate PHPCompatibility companion standards to suppress false positives:
+   - Without `--check-deps`: reads `require` from `composer.json`
+   - With `--check-deps`: reads `composer.lock` after remote installation, or local installed metadata, to catch transitive polyfill dependencies
+   - Supported: `symfony/polyfill-php*`, `paragonie/random_compat`, `paragonie/sodium_compat`, `ircmaxell/password-compat`
+7. In shallow mode, vendor packages whose `require.php` satisfies the target are trusted and excluded from the scan; packages with no `require.php` are always scanned
+8. Runs PHPCompatibility via PHP_CodeSniffer against the resolved directories, ignoring `vendor/composer/`, `vendor/autoload.php`, and polyfill version-gated bootstrap files (e.g. `bootstrap80.php`)
+
+## Installation
 
 ### Option 1: Download a release archive (recommended)
 
