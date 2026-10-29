@@ -27,6 +27,7 @@ with open(os.environ["TEST_LOG"], "a") as log:
 if name == "docker":
     if args[0] == "build":
         print("Docker build output")
+        print("Docker build progress", file=sys.stderr)
         sys.exit(int(os.environ.get("TEST_DOCKER_BUILD_EXIT", "0")))
     if args[:2] == ["image", "inspect"]:
         sys.exit(int(os.environ.get("TEST_DOCKER_IMAGE_EXIT", "0")))
@@ -352,6 +353,9 @@ class CliTest(unittest.TestCase):
                         ["bash", str(launcher), *args], cwd=self.project, env=self.env,
                         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Building development image", result.stdout)
+                    self.assertNotIn("Docker build output", result.stdout + result.stderr)
+                    self.assertNotIn("Docker build progress", result.stdout + result.stderr)
                     calls = self.calls("docker")
                     self.assertEqual(calls[0]["args"],
                                      ["build", "-t", "zoliszabo/php-compat-check:9.8.7-dev",
@@ -369,6 +373,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["exit_code"], 2)
         self.assertIn("Docker build output", result.stderr)
+        self.assertIn("Docker build progress", result.stderr)
         self.assertEqual([c["args"][0] for c in self.calls("docker")], ["build"])
 
     def test_development_install_requires_complete_matching_build_sources(self):

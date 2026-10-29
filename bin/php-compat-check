@@ -15,6 +15,7 @@ IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:$VERSION}"
 JSON_MODE=0
 JSON_DELIVERED=0
 JSON_OUTPUT=""
+BUILD_OUTPUT=""
 for arg in "$@"; do
   case "$arg" in --format=json) JSON_MODE=1 ;; --format=text) JSON_MODE=0 ;; esac
 done
@@ -29,6 +30,7 @@ finish_output() {
     status=2
   fi
   [ -z "$JSON_OUTPUT" ] || rm -f -- "$JSON_OUTPUT"
+  [ -z "$BUILD_OUTPUT" ] || rm -f -- "$BUILD_OUTPUT"
   exit "$status"
 }
 trap finish_output EXIT
@@ -65,7 +67,13 @@ build_dev_image() {
   fi
   context=$(cd -- "$context" && pwd -P)
   echo_info "Building development image $IMAGE ..."
-  docker build -t "$IMAGE" -f "$context/docker/Dockerfile" "$context" >&2
+  BUILD_OUTPUT=$(mktemp)
+  if ! docker build -t "$IMAGE" -f "$context/docker/Dockerfile" "$context" > "$BUILD_OUTPUT" 2>&1; then
+    cat "$BUILD_OUTPUT" >&2
+    exit 2
+  fi
+  rm -f -- "$BUILD_OUTPUT"
+  BUILD_OUTPUT=""
 }
 
 if [ "$#" -eq 0 ]; then
