@@ -16,6 +16,7 @@ JSON_MODE=0
 JSON_DELIVERED=0
 JSON_OUTPUT=""
 BUILD_OUTPUT=""
+PULL_OUTPUT=""
 for arg in "$@"; do
   case "$arg" in --format=json) JSON_MODE=1 ;; --format=text) JSON_MODE=0 ;; esac
 done
@@ -31,6 +32,7 @@ finish_output() {
   fi
   [ -z "$JSON_OUTPUT" ] || rm -f -- "$JSON_OUTPUT"
   [ -z "$BUILD_OUTPUT" ] || rm -f -- "$BUILD_OUTPUT"
+  [ -z "$PULL_OUTPUT" ] || rm -f -- "$PULL_OUTPUT"
   exit "$status"
 }
 trap finish_output EXIT
@@ -149,8 +151,14 @@ done
 if [ "$BUILD_DEV" -eq 1 ]; then
   build_dev_image
 elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo_info "Image not found locally. Pulling $IMAGE ..."
-  docker pull "$IMAGE"
+  echo_info "Pulling required image $IMAGE ..."
+  PULL_OUTPUT=$(mktemp)
+  if ! docker pull "$IMAGE" > "$PULL_OUTPUT" 2>&1; then
+    cat "$PULL_OUTPUT" >&2
+    exit 2
+  fi
+  rm -f -- "$PULL_OUTPUT"
+  PULL_OUTPUT=""
 fi
 
 # Local sources are mounted read-only, even when dependency checks are requested.

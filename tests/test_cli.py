@@ -32,6 +32,8 @@ if name == "docker":
     if args[:2] == ["image", "inspect"]:
         sys.exit(int(os.environ.get("TEST_DOCKER_IMAGE_EXIT", "0")))
     if args[0] == "pull":
+        print("Docker pull output")
+        print("Docker pull progress", file=sys.stderr)
         sys.exit(int(os.environ.get("TEST_DOCKER_PULL_EXIT", "0")))
     if args[0] == "run":
         sys.exit(int(os.environ.get("TEST_DOCKER_EXIT", "0")))
@@ -314,12 +316,29 @@ class CliTest(unittest.TestCase):
                 self.env["TEST_DOCKER_PULL_EXIT"] = str(pull_status)
                 result = subprocess.run(
                     ["bash", str(launcher), ".", "7.4"], cwd=self.project, env=self.env,
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                self.assertEqual(result.returncode, 0 if pull_status == 0 else 2, result.stdout)
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, 0 if pull_status == 0 else 2,
+                                 result.stdout + result.stderr)
+                self.assertIn(f"Pulling required image {image} ...", result.stdout)
+                self.assertNotIn("Docker pull", result.stdout)
+                if pull_status == 0:
+                    self.assertEqual(result.stderr, "")
+                else:
+                    self.assertIn("Docker pull output", result.stderr)
+                    self.assertIn("Docker pull progress", result.stderr)
                 calls = self.calls("docker")
                 self.assertEqual(calls[0]["args"], ["image", "inspect", image])
                 self.assertEqual(calls[1]["args"], ["pull", image])
                 self.assertEqual(len(calls), 3 if pull_status == 0 else 2)
+        result = subprocess.run(
+            ["bash", str(launcher), ".", "7.4", "--format=json"],
+            cwd=self.project, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["exit_code"], 2)
+        self.assertIn(f"Pulling required image {image} ...", result.stderr)
+        self.assertIn("Docker pull output", result.stderr)
+        self.assertIn("Docker pull progress", result.stderr)
 
     def development_launcher(self, installed=False):
         checkout = self.base / "development checkout"
