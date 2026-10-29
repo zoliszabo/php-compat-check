@@ -43,7 +43,12 @@ repository=$(gh repo view "$remote_url" --json nameWithOwner --jq .nameWithOwner
 current_version=$(cat VERSION)
 current_base=${current_version%-dev}
 valid_version "$current_base" || fail "VERSION must contain X.Y.Z or X.Y.Z-dev."
-release_version=${RELEASE_VERSION:-$current_base}
+release_version=${RELEASE_VERSION:-}
+if [[ -z "$release_version" ]]; then
+  printf 'Release version [%s]: ' "$current_base" >&2
+  IFS= read -r release_version || fail "Unable to read a release version from stdin; specify RELEASE_VERSION."
+  release_version=${release_version:-$current_base}
+fi
 valid_version "$release_version" || fail "RELEASE_VERSION must be a stable X.Y.Z version."
 if version_greater "$current_base" "$release_version"; then
   fail "RELEASE_VERSION cannot be lower than $current_base."

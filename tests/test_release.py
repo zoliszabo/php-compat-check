@@ -106,10 +106,10 @@ class ReleaseFixture(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
-    def release(self, success=True, make_args=None, **env):
+    def release(self, success=True, make_args=None, stdin="\n", **env):
         command = ["bash", "scripts/release.sh"] if make_args is None else [MAKE, "release", *make_args]
         result = subprocess.run(command, cwd=self.repo, env=dict(self.env, **env),
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                input=stdin, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
 
@@ -124,7 +124,8 @@ class ReleaseFixture(unittest.TestCase):
 
 class ReleaseTest(ReleaseFixture):
     def test_default_cycle_preserves_release_tag_and_pushes_development_commit(self):
-        self.release()
+        result = self.release(make_args=[])
+        self.assertIn("Release version [3.2.1]: ", result.stderr)
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual(self.git("cat-file", "-t", "3.2.1"), "tag")
         self.assertEqual(self.git("show", "3.2.1:VERSION"), "3.2.1")
@@ -141,10 +142,30 @@ class ReleaseTest(ReleaseFixture):
 
     def test_make_passes_version_and_remote_overrides(self):
         self.git("remote", "rename", "origin", "upstream")
-        self.release(make_args=["RELEASE_VERSION=4.0.0", "NEXT_VERSION=4.1.0-dev", "RELEASE_REMOTE=upstream"])
+        result = self.release(stdin="", make_args=["RELEASE_VERSION=4.0.0", "NEXT_VERSION=4.1.0-dev", "RELEASE_REMOTE=upstream"])
+        self.assertNotIn("Release version [", result.stderr)
         self.assertEqual(self.git("show", "4.0.0:VERSION"), "4.0.0")
         self.assertEqual(self.git("show", "HEAD:VERSION"), "4.1.0-dev")
         self.assertEqual(self.git("rev-parse", "upstream/main"), self.git("rev-parse", "HEAD"))
+
+    def test_prompt_accepts_release_version_and_derives_next_version(self):
+        result = self.release(make_args=[], stdin="4.0.0\n")
+        self.assertIn("Release version [3.2.1]: ", result.stderr)
+        self.assertEqual(self.git("show", "4.0.0:VERSION"), "4.0.0")
+        self.assertEqual(self.git("show", "HEAD:VERSION"), "4.0.1-dev")
+
+    def test_prompt_rejects_invalid_or_lower_versions_before_changes(self):
+        for version in ("v3.2.1", "3.2.0", "3.02.1", "3.2.1-rc.1"):
+            with self.subTest(version=version):
+                self.release(success=False, stdin=version + "\n")
+                self.assert_unchanged()
+        self.assertNotIn(["make", "test"], self.events())
+
+    def test_closed_stdin_aborts_before_changes(self):
+        result = self.release(success=False, stdin="")
+        self.assertIn("Unable to read a release version from stdin", result.stderr)
+        self.assert_unchanged()
+        self.assertNotIn(["make", "test"], self.events())
 
     def test_follow_tags_configuration_does_not_push_unrelated_tags(self):
         self.git("config", "push.followTags", "true")
