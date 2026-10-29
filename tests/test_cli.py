@@ -25,6 +25,13 @@ args = sys.argv[1:]
 with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "cwd": os.getcwd()}) + "\n")
 if name == "docker":
+    if args[0] == "build":
+        print("Docker build output")
+        sys.exit(int(os.environ.get("TEST_DOCKER_BUILD_EXIT", "0")))
+    if args[:2] == ["image", "inspect"]:
+        sys.exit(int(os.environ.get("TEST_DOCKER_IMAGE_EXIT", "0")))
+    if args[0] == "pull":
+        sys.exit(int(os.environ.get("TEST_DOCKER_PULL_EXIT", "0")))
     if args[0] == "run":
         sys.exit(int(os.environ.get("TEST_DOCKER_EXIT", "0")))
 elif name == "composer":
@@ -240,7 +247,7 @@ class CliTest(unittest.TestCase):
 
     def test_unknown_options_fail_before_external_commands(self):
         for wrapper in (False, True):
-            for option in ("--source-version", "--unknown", "--unknown=value", "-v"):
+            for option in ("--source-version", "--upgrade", "--unknown", "--unknown=value", "-v"):
                 for args in ((option,), ("--show-warnings", option, ".", "8.1"),
                              ("vendor/package", option),
                              ("https://example.test/repo", "8.1", option)):
@@ -270,6 +277,114 @@ class CliTest(unittest.TestCase):
                 args = self.calls("docker")[-1]["args"]
                 self.assertEqual(args[-4:], ["php-compat-check:dev", "php-compat-check", source, "8.1"])
                 self.assertNotIn("local:/project", args)
+
+    def test_installed_wrapper_selects_matching_image_for_checks(self):
+        launcher = self.base / "installed/bin/php-compat-check"
+        launcher.parent.mkdir(parents=True)
+        shutil.copyfile(WRAPPER, launcher)
+        version_file = self.base / "installed/share/php-compat-check/VERSION"
+        version_file.parent.mkdir(parents=True)
+        self.env.pop("PHP_COMPAT_CHECK_IMAGE", None)
+        for version in ("3.3.0", "4.0.0-rc.1"):
+            image = f"zoliszabo/php-compat-check:{version}"
+            version_file.write_text(version + "\n")
+            with self.subTest(version=version):
+                self.log.write_text("")
+                result = subprocess.run(
+                    ["bash", str(launcher), ".", "7.4"], cwd=self.project, env=self.env,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                calls = self.calls("docker")
+                self.assertEqual(calls[0]["args"], ["image", "inspect", image])
+                self.assertEqual(calls[-1]["args"][-4:],
+                                 [image, "php-compat-check", "local:/project", "7.4"])
+
+    def test_wrapper_pulls_missing_matching_image_without_fallback(self):
+        launcher = self.base / "release/bin/php-compat-check"
+        launcher.parent.mkdir(parents=True)
+        shutil.copyfile(WRAPPER, launcher)
+        (launcher.parent.parent / "VERSION").write_text("3.3.0\n")
+        self.env.pop("PHP_COMPAT_CHECK_IMAGE", None)
+        self.env["TEST_DOCKER_IMAGE_EXIT"] = "1"
+        image = "zoliszabo/php-compat-check:3.3.0"
+        for pull_status in (0, 1):
+            with self.subTest(pull_status=pull_status):
+                self.log.write_text("")
+                self.env["TEST_DOCKER_PULL_EXIT"] = str(pull_status)
+                result = subprocess.run(
+                    ["bash", str(launcher), ".", "7.4"], cwd=self.project, env=self.env,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                self.assertEqual(result.returncode, 0 if pull_status == 0 else 2, result.stdout)
+                calls = self.calls("docker")
+                self.assertEqual(calls[0]["args"], ["image", "inspect", image])
+                self.assertEqual(calls[1]["args"], ["pull", image])
+                self.assertEqual(len(calls), 3 if pull_status == 0 else 2)
+
+    def development_launcher(self, installed=False):
+        checkout = self.base / "development checkout"
+        for name in ("Makefile", "VERSION", "HELP", "bin/php-compat-check",
+                     "docker/Dockerfile", "docker/report.php", "docker/bin/php-compat-check"):
+            target = checkout / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, target)
+        (checkout / "VERSION").write_text("9.8.7-dev\n")
+        self.env.pop("PHP_COMPAT_CHECK_IMAGE", None)
+        if not installed:
+            return checkout / "bin/php-compat-check", checkout
+        prefix = self.base / "installed development"
+        result = subprocess.run(["make", "install", f"INSTALL_DIR={prefix / 'bin'}"],
+                                cwd=checkout, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = prefix / "share/php-compat-check/source"
+        for name in ("VERSION", "HELP", "docker/Dockerfile", "docker/report.php",
+                     "docker/bin/php-compat-check"):
+            self.assertEqual((context / name).read_bytes(), (checkout / name).read_bytes())
+        return prefix / "bin/php-compat-check", context
+
+    def test_development_launcher_rebuilds_on_each_check(self):
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                launcher, context = self.development_launcher(installed)
+                for args in ((".", "7.4"), (".", "7.4")):
+                    self.log.write_text("")
+                    result = subprocess.run(
+                        ["bash", str(launcher), *args], cwd=self.project, env=self.env,
+                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    calls = self.calls("docker")
+                    self.assertEqual(calls[0]["args"],
+                                     ["build", "-t", "zoliszabo/php-compat-check:9.8.7-dev",
+                                      "-f", str(context / "docker/Dockerfile"), str(context)])
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[1]["args"][0], "run")
+
+    def test_development_build_failure_preserves_json_output(self):
+        launcher, _ = self.development_launcher()
+        self.env["TEST_DOCKER_BUILD_EXIT"] = "1"
+        result = subprocess.run(
+            ["bash", str(launcher), ".", "7.4", "--format=json"],
+            cwd=self.project, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["exit_code"], 2)
+        self.assertIn("Docker build output", result.stderr)
+        self.assertEqual([c["args"][0] for c in self.calls("docker")], ["build"])
+
+    def test_development_install_requires_complete_matching_build_sources(self):
+        launcher, context = self.development_launcher(installed=True)
+        for mismatch in (True, False):
+            with self.subTest(mismatch=mismatch):
+                if mismatch:
+                    (context / "VERSION").write_text("9.8.6-dev\n")
+                else:
+                    (context / "docker/Dockerfile").unlink()
+                result = subprocess.run(
+                    ["bash", str(launcher), ".", "7.4"], cwd=self.project, env=self.env,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("Reinstall", result.stdout)
+                self.assertEqual(self.calls("docker"), [])
 
     def test_missing_local_directory_fails_before_docker(self):
         for source in ("./missing", "local:", "local:src/uncommitted.php"):

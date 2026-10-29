@@ -11,7 +11,7 @@ if [ ! -f "$VERSION_FILE" ]; then
   VERSION_FILE="$SCRIPT_DIR/../share/php-compat-check/VERSION"
 fi
 IFS= read -r VERSION < "$VERSION_FILE"
-IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:latest}"
+IMAGE="${PHP_COMPAT_CHECK_IMAGE:-zoliszabo/php-compat-check:$VERSION}"
 JSON_MODE=0
 JSON_DELIVERED=0
 JSON_OUTPUT=""
@@ -40,7 +40,6 @@ fi
 # Helper functions
 echo_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 echo_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
-echo_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 echo_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
 print_help() {
@@ -48,6 +47,25 @@ print_help() {
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
   done < "${VERSION_FILE%/*}/HELP"
+}
+
+build_dev_image() {
+  local context="${VERSION_FILE%/*}" file context_version
+  [ -f "$context/docker/Dockerfile" ] || context="$context/source"
+  for file in VERSION HELP docker/Dockerfile docker/report.php docker/bin/php-compat-check; do
+    if [ ! -f "$context/$file" ]; then
+      echo_error "Development build sources are missing. Reinstall from a complete checkout with make install, or set PHP_COMPAT_CHECK_IMAGE."
+      exit 2
+    fi
+  done
+  IFS= read -r context_version < "$context/VERSION"
+  if [ "$context_version" != "$VERSION" ]; then
+    echo_error "Development build sources do not match launcher version $VERSION. Reinstall with make install."
+    exit 2
+  fi
+  context=$(cd -- "$context" && pwd -P)
+  echo_info "Building development image $IMAGE ..."
+  docker build -t "$IMAGE" -f "$context/docker/Dockerfile" "$context" >&2
 }
 
 if [ "$#" -eq 0 ]; then
@@ -77,13 +95,7 @@ for i in "${!ARGS[@]}"; do
       echo_error "Invalid output format: ${arg#*=}. Use text or json."
       exit 2
       ;;
-    --upgrade)
-      if [ "$JSON_MODE" -eq 1 ]; then
-        echo_error "--format=json is available for compatibility analysis; --upgrade uses text output."
-        exit 2
-      fi
-      ;;
-    --upgrade|--check-deps|--check-deps=*|--min-php-version|--max-php-version|--matrix|--from-php-version=*|--to-php-version=*|\
+    --check-deps|--check-deps=*|--min-php-version|--max-php-version|--matrix|--from-php-version=*|--to-php-version=*|\
     --ignore-composer-php-version|--show-deps|--show-warnings|--scan-dirs=*|--source-version=*) ;;
     -*)
       echo_error "Unknown option: $arg"
@@ -98,12 +110,9 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 2
 fi
 
-# Handle upgrade flag
-if [[ "${1:-}" == "--upgrade" ]]; then
-  echo_info "Pulling $IMAGE ..."
-  docker pull "$IMAGE"
-  echo_success "Image updated successfully!"
-  exit 0
+BUILD_DEV=0
+if [[ "$VERSION" == *-dev ]] && [ -z "${PHP_COMPAT_CHECK_IMAGE:-}" ]; then
+  BUILD_DEV=1
 fi
 
 # Only explicit paths are local; vendor/package always remains Packagist shorthand.
@@ -128,8 +137,10 @@ for i in "${!ARGS[@]}"; do
   break
 done
 
-# Ensure image exists locally
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+# Rebuild development code on each run, reusing Docker's layer cache.
+if [ "$BUILD_DEV" -eq 1 ]; then
+  build_dev_image
+elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo_info "Image not found locally. Pulling $IMAGE ..."
   docker pull "$IMAGE"
 fi

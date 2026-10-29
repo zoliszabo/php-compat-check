@@ -39,12 +39,12 @@ Options:
   --show-warnings                    Display PHPCompatibility warnings
   --scan-dirs=<dirs>                 Scan comma-separated directories/files
                                      (default: Composer autoload paths)
-  --upgrade                          Pull the configured Docker image
-                                     (wrapper only; local installation unchanged)
 
 Local checks use current files and installed dependencies without modifying them.
 Remote sources are cloned; --check-deps installs their production dependencies.
-The wrapper uses Docker. Set PHP_COMPAT_CHECK_IMAGE to choose a different image.
+The wrapper uses the Docker image tagged with its own version.
+Versions ending in -dev rebuild the image locally using Docker's cache.
+Set PHP_COMPAT_CHECK_IMAGE to choose a different image.
 
 Examples:
   php-compat-check . 8.1

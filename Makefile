@@ -11,10 +11,18 @@ install:
 	@install -D -m 644 VERSION "$(VERSION_INSTALL_DIR)/VERSION"
 	@install -D -m 644 HELP "$(VERSION_INSTALL_DIR)/HELP"
 	@install -D -m 755 $(SCRIPT_SOURCE) "$(INSTALL_DIR)/$(SCRIPT_NAME)"
+	@case "$$(cat VERSION)" in *-dev) \
+		for source_file in VERSION HELP docker/Dockerfile docker/report.php docker/bin/php-compat-check; do \
+			install -D -m 644 "$$source_file" "$(VERSION_INSTALL_DIR)/source/$$source_file" || exit; \
+		done ;; \
+	esac
 	@echo "✓ $(SCRIPT_NAME) installed to $(INSTALL_DIR)/$(SCRIPT_NAME)"
 
 uninstall:
 	@rm -f "$(INSTALL_DIR)/$(SCRIPT_NAME)" "$(VERSION_INSTALL_DIR)/VERSION" "$(VERSION_INSTALL_DIR)/HELP"
+	@for source_file in VERSION HELP docker/Dockerfile docker/report.php docker/bin/php-compat-check; do \
+		rm -f "$(VERSION_INSTALL_DIR)/source/$$source_file"; \
+	done
 	@echo "✓ $(SCRIPT_NAME) uninstalled from $(INSTALL_DIR)"
 
 build:

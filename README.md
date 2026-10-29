@@ -149,7 +149,6 @@ For remote sources, packages that declare an incompatible `require.php` are alwa
 | `--source-version=<version>` | Select a remote package/repository version (package constraint, tag, branch, or `dev-main` style); unavailable for local sources |
 | `--version` | Print the executable's version and exit; works without Docker, Composer, or a source argument |
 | `--version=<ref>` | Deprecated alias for `--source-version=<version>`; emits a warning |
-| `--upgrade` | Pull the configured Docker image (default: `latest`); updates the checker image, while the local wrapper and version file are updated with `make install` |
 
 Unknown flags are rejected with an error. The Docker wrapper reports its own installed version with `--version`; when running the command directly inside an image, it reports that image's executable version.
 
@@ -192,7 +191,7 @@ php-compat-check . --max-php-version --check-deps=full --format=json
 php-compat-check . --matrix --from-php-version=8.0 --format=json > compatibility.json
 ```
 
-`--format=json` writes one JSON document to stdout and sends progress and human diagnostics to stderr. It supports checks, both searches, and matrices. Exit codes keep the meaning below, including when a valid JSON report describes incompatibility or an analysis error. `--format=text` is the default. Help and version requests remain plain text; the Docker image upgrade command uses text output.
+`--format=json` writes one JSON document to stdout and sends progress and human diagnostics to stderr. It supports checks, both searches, and matrices. Exit codes keep the meaning below, including when a valid JSON report describes incompatibility or an analysis error. `--format=text` is the default. Help and version requests remain plain text.
 
 Reports use `schema_version: 1` with these fields:
 
@@ -254,9 +253,9 @@ php-compat-check --version
 php-compat-check --help
 ```
 
-If `~/.local/bin` is not already on your `PATH`, add the `export` line to your shell's startup file. Keep `share/php-compat-check/` alongside `bin/`; the executable needs its `VERSION` and `HELP` files. The first compatibility check automatically pulls the Docker image.
+If `~/.local/bin` is not already on your `PATH`, add the `export` line to your shell's startup file. Keep `share/php-compat-check/` alongside `bin/`; the executable needs its `VERSION` and `HELP` files. The launcher uses `zoliszabo/php-compat-check:<version>`, with the exact version from its packaged `VERSION` file. Release versions automatically pull that image if it is missing locally; versions ending in `-dev` build it locally as described under Development. Set `PHP_COMPAT_CHECK_IMAGE` to select a different image explicitly and bypass automatic development builds.
 
-Each release also includes `SHA256SUMS` covering both archives. To verify a download, place that release's checksum file beside the archive and run `sha256sum --check --ignore-missing SHA256SUMS` before extracting. The latest stable release's checksum file is available at [releases/latest/download/SHA256SUMS](https://github.com/zoliszabo/php-compat-check/releases/latest/download/SHA256SUMS). To update the installed launcher, repeat the installation; `--upgrade` updates only the Docker image.
+Each release also includes `SHA256SUMS` covering both archives. To verify a download, place that release's checksum file beside the archive and run `sha256sum --check --ignore-missing SHA256SUMS` before extracting. The latest stable release's checksum file is available at [releases/latest/download/SHA256SUMS](https://github.com/zoliszabo/php-compat-check/releases/latest/download/SHA256SUMS). To move to a newer tool version, install that release's launcher; its next check selects the matching image.
 
 ### Option 2: Install from source with Make
 
@@ -321,6 +320,12 @@ make run ARGS=". 8.1"
 ```
 
 `make run` always rebuilds the image before running, so you never test stale code.
+
+For versions ending in `-dev`, running `bin/php-compat-check` directly rebuilds the version-tagged image from the checkout before each check, using Docker's layer cache. Builds use the launcher's sources, regardless of which project is being scanned. The launcher never falls back to `latest`.
+
+`make install` for a development version also installs the required build files under `share/php-compat-check/source/`, so the installed launcher can build without the original checkout. Run `make install` again to include later source changes. An older development installation without these files reports an error asking you to reinstall.
+
+An explicit `PHP_COMPAT_CHECK_IMAGE` bypasses automatic builds and keeps the usual inspect/pull/run behavior. For example, after `make build`, use `PHP_COMPAT_CHECK_IMAGE=php-compat-check:dev php-compat-check . 8.1` to reuse that local image.
 
 To run CLI regression tests (requires Python 3, Bash, PHP, jq, and a Composer PHAR on `PATH`):
 
