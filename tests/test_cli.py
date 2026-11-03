@@ -162,6 +162,18 @@ class VersionTest(unittest.TestCase):
             shutil.copyfile(CHECKER, installed)
             self.check_version(installed, version)
 
+    def test_uninstall_removes_packaged_files_with_spaces_in_prefix(self):
+        with tempfile.TemporaryDirectory(prefix="php-compat-check uninstall ") as directory:
+            prefix = Path(directory)
+            for target in ("install", "uninstall"):
+                result = subprocess.run(
+                    ["make", target, f"INSTALL_DIR={prefix / 'bin'}"],
+                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((prefix / "bin/php-compat-check").exists())
+            self.assertFalse((prefix / "share/php-compat-check/VERSION").exists())
+            self.assertFalse((prefix / "share/php-compat-check/HELP").exists())
+
 
 class CliTest(unittest.TestCase):
     def setUp(self):

@@ -3,7 +3,7 @@
 INSTALL_DIR ?= /usr/local/bin
 SCRIPT_SOURCE = bin/php-compat-check
 SCRIPT_NAME = php-compat-check
-VERSION_INSTALL_DIR = $(abspath $(INSTALL_DIR)/../share/php-compat-check)
+VERSION_INSTALL_DIR = $$(realpath -m -- "$(INSTALL_DIR)/../share/php-compat-check")
 DEV_IMAGE = php-compat-check:dev
 RELEASE_REMOTE ?= origin
 
