@@ -48,7 +48,8 @@ elif name == "composer":
         packages = json.loads(os.environ.get("TEST_PACKAGES", "[]"))
         pathlib.Path("composer.lock").write_text(json.dumps({"packages": packages}))
         for package in packages:
-            folder = pathlib.Path("vendor") / package["name"]
+            config = json.loads(pathlib.Path("composer.json").read_text())
+            folder = pathlib.Path(config.get("config", {}).get("vendor-dir", "vendor")) / package["name"]
             folder.mkdir(parents=True, exist_ok=True)
     elif args[:2] != ["config", "platform.php"]:
         sys.exit(90)
@@ -434,6 +435,35 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.calls("git"), [])
         self.assertEqual(self.calls("curl"), [])
         self.assertTrue(all(c["args"] == ["config", "--global", "home"] for c in self.calls("composer")))
+
+    def test_custom_vendor_directory(self):
+        packages = [{"name": "acme/trusted", "version": "1", "require": {"php": "^8.0"}},
+                    {"name": "acme/unknown", "version": "1"},
+                    {"name": "acme/dev", "version": "1"}]
+        self.install(packages, dev=["acme/dev"])
+        self.write("composer.json", {"config": {"vendor-dir": "./private/dependencies/"},
+                                     "autoload": {"psr-4": {"App\\": "src/"}}})
+        (self.project / "private").mkdir()
+        (self.project / "vendor").rename(self.project / "private/dependencies")
+        before = self.snapshot()
+        for mode in (None, "--check-deps", "--check-deps=full"):
+            with self.subTest(mode=mode):
+                result = self.run_cli(".", "8.1", *([mode] if mode else []))
+                self.assertEqual(result.returncode, 0, result.stdout)
+                args = self.calls("phpcs")[-1]["args"]
+                ignores = next(a for a in args if a.startswith("--ignore="))
+                if mode:
+                    self.assertIn("private/dependencies", args)
+                    self.assertIn("*/private/dependencies/acme/dev/*", ignores)
+                    self.assertEqual("*/private/dependencies/acme/trusted/*" in ignores,
+                                     mode == "--check-deps")
+                else:
+                    self.assertIn("*/private/dependencies/*", ignores)
+        self.assertEqual(self.snapshot(), before)
+        self.env["TEST_PACKAGES"] = json.dumps(packages[:2])
+        result = self.run_cli("repo:https://example.test/repo", "8.1", "--check-deps=full")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("private/dependencies", self.calls("phpcs")[-1]["args"])
 
     def test_local_dependency_modes_use_installed_metadata_and_exclude_dev(self):
         self.install([{"name": "vendor/trusted", "version": "1", "require": {"php": "^8.0"}},

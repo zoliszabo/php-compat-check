@@ -240,16 +240,16 @@ collect_vendor_ignores() {
     foreach (json_decode(stream_get_contents(STDIN), true) as $package) {
         $constraint = $package["require"]["php"] ?? "";
         if ($constraint !== "" && Composer\Semver\Semver::satisfies($argv[2], $constraint) === ($argv[3] === "1")) {
-            echo "vendor/" . $package["name"] . PHP_EOL;
+            echo $argv[4] . "/" . $package["name"] . PHP_EOL;
         }
     }
-  ' "$COMPOSER_HOME" "$target_version" "$compatible" <<< "$DEPENDENCY_PACKAGES"
+  ' "$COMPOSER_HOME" "$target_version" "$compatible" "$VENDOR_DIR" <<< "$DEPENDENCY_PACKAGES"
 }
 
 load_local_dependencies() {
   DEPENDENCY_PACKAGES='[]'
   LOCAL_DEV_PACKAGES=()
-  if [ ! -f vendor/composer/installed.json ]; then
+  if [ ! -f "$VENDOR_DIR/composer/installed.json" ]; then
     if [ -f composer.json ] && jq -e '
       .require // {} | keys | any(test("^[^/]+/[^/]+$"))
     ' composer.json >/dev/null; then
@@ -266,12 +266,12 @@ load_local_dependencies() {
     if type == "array" then .
     elif (.packages | type) == "array" then .packages
     else error("Invalid installed package metadata") end
-  ' vendor/composer/installed.json); then
+  ' "$VENDOR_DIR/composer/installed.json"); then
     echo_error "Could not read installed dependency metadata. Run Composer install in the local project first."
     return 1
   fi
-  if jq -e 'type == "object"' vendor/composer/installed.json >/dev/null; then
-    mapfile -t LOCAL_DEV_PACKAGES < <(jq -r '.["dev-package-names"] // [] | .[]' vendor/composer/installed.json)
+  if jq -e 'type == "object"' "$VENDOR_DIR/composer/installed.json" >/dev/null; then
+    mapfile -t LOCAL_DEV_PACKAGES < <(jq -r '.["dev-package-names"] // [] | .[]' "$VENDOR_DIR/composer/installed.json")
   elif [ -f composer.lock ]; then
     mapfile -t LOCAL_DEV_PACKAGES < <(jq -r '.["packages-dev"] // [] | .[].name' composer.lock)
   fi
@@ -310,8 +310,8 @@ load_local_dependencies() {
 
   local missing=0 package
   while IFS= read -r package; do
-    if [ ! -d "vendor/$package" ]; then
-      echo_error "Installed dependency directory missing: vendor/$package. Run Composer install in the local project first."
+    if [ ! -d "$VENDOR_DIR/$package" ]; then
+      echo_error "Installed dependency directory missing: $VENDOR_DIR/$package. Run Composer install in the local project first."
       missing=1
     fi
   done < <(jq -r '.[] | select(.type != "metapackage") | .name' <<< "$DEPENDENCY_PACKAGES")
@@ -359,18 +359,20 @@ perform_check() {
   local version="$1"
   local verbose="${2:-0}"
   local target="${version}"
-  local phpcs_ignore="*/vendor/composer/*,*/vendor/autoload.php,*/polyfill-*/bootstrap*.php"
+  local vendor_ignore="$VENDOR_DIR"
+  [[ "$VENDOR_DIR" == /* ]] || vendor_ignore="*/$vendor_ignore"
+  local phpcs_ignore="$vendor_ignore/composer/*,$vendor_ignore/autoload.php,*/polyfill-*/bootstrap*.php"
 
   local scan_dirs=("${SCAN_DIRS[@]}")
   local dependency_constraint_fails=0
   PHPCS_STANDARDS="$BASE_PHPCS_STANDARDS"
   if [ "$SOURCE_TYPE" = "local" ]; then
     if [ -z "$CHECK_DEPS" ]; then
-      phpcs_ignore="${phpcs_ignore},*/vendor/*"
+      phpcs_ignore="${phpcs_ignore},${vendor_ignore}/*"
     else
       local dev_package
       for dev_package in "${LOCAL_DEV_PACKAGES[@]}"; do
-        phpcs_ignore="${phpcs_ignore},*/vendor/${dev_package}/*"
+        phpcs_ignore="${phpcs_ignore},${vendor_ignore}/${dev_package}/*"
       done
     fi
   fi
@@ -395,7 +397,7 @@ perform_check() {
     if [ "$SOURCE_TYPE" != "local" ]; then
       DEPENDENCY_PACKAGES='[]'
       CHECK_REASON=composer_error
-      rm -rf vendor composer.lock
+      rm -rf -- "$VENDOR_DIR" composer.lock
 
       jq --argjson ignore "$IGNORE_COMPOSER_PHP_VERSION" '
         del(.["require-dev"], .["autoload-dev"]) |
@@ -441,15 +443,15 @@ perform_check() {
     if [ ${#incompatible_ignores[@]} -gt 0 ]; then
       for incomp_path in "${incompatible_ignores[@]}"; do
         local pkg_constraint
-        pkg_constraint=$(jq -r --arg name "${incomp_path#vendor/}" '.[] | select(.name == $name) | .require.php // ""' <<< "$DEPENDENCY_PACKAGES")
+        pkg_constraint=$(jq -r --arg name "${incomp_path#"$VENDOR_DIR/"}" '.[] | select(.name == $name) | .require.php // ""' <<< "$DEPENDENCY_PACKAGES")
         incompatible_constraints+=("$pkg_constraint")
         if [ "$SOURCE_TYPE" = "local" ]; then
-          echo_error "Installed dependency ${incomp_path#vendor/} requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
+          echo_error "Installed dependency ${incomp_path#"$VENDOR_DIR/"} requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
           dependency_constraint_fails=1
         else
-          echo_warning "Skipping ${incomp_path#vendor/} — requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
+          echo_warning "Skipping ${incomp_path#"$VENDOR_DIR/"} — requires PHP ${pkg_constraint}, incompatible with PHP ${version}"
         fi
-        phpcs_ignore="${phpcs_ignore},*/${incomp_path}/*"
+        phpcs_ignore="${phpcs_ignore},${vendor_ignore}/${incomp_path#"$VENDOR_DIR/"}/*"
       done
     fi
 
@@ -457,7 +459,7 @@ perform_check() {
     if [ "$CHECK_DEPS" != "full" ]; then
       mapfile -t trusted_ignores < <(collect_vendor_ignores "$version" 1)
       for trusted_path in "${trusted_ignores[@]}"; do
-        phpcs_ignore="${phpcs_ignore},*/${trusted_path}/*"
+        phpcs_ignore="${phpcs_ignore},${vendor_ignore}/${trusted_path#"$VENDOR_DIR/"}/*"
       done
       if [ ${#trusted_ignores[@]} -gt 0 ]; then
         echo_info "Trusting ${#trusted_ignores[@]} vendor package(s) with compatible PHP constraint (use --check-deps=full to include them)"
@@ -474,7 +476,7 @@ perform_check() {
         echo_info "Dependencies (${total_pkgs} packages):"
         echo ""
         while IFS=$'\t' read -r pkg_name pkg_version; do
-          local vendor_path="vendor/${pkg_name}"
+          local vendor_path="$VENDOR_DIR/${pkg_name}"
           local is_ignored=0
           local is_trusted=0
           local pkg_php_req=""
@@ -864,6 +866,26 @@ if [ -f composer.json ]; then
     exit 2
   fi
 fi
+# Resolve the project setting once; Composer tool dependencies use COMPOSER_HOME separately.
+VENDOR_DIR=$(php -r '
+  $config = is_file("composer.json") ? json_decode(file_get_contents("composer.json"), true) : [];
+  $path = $config["config"]["vendor-dir"] ?? "vendor";
+  if (!is_string($path) || trim($path) === "") exit(1);
+  $path = str_replace(["$" . "HOME", "~"], getenv("HOME"), $path);
+  if ($path[0] !== "/") $path = getcwd() . "/" . $path;
+  $parts = [];
+  foreach (explode("/", $path) as $part) {
+    if ($part === "" || $part === ".") continue;
+    if ($part === "..") array_pop($parts); else $parts[] = $part;
+  }
+  $path = "/" . implode("/", $parts);
+  $root = getcwd() . "/";
+  echo str_starts_with($path, $root) ? substr($path, strlen($root)) : $path;
+') || { echo_error "Invalid Composer config.vendor-dir; expected a non-empty path string."; exit 2; }
+if [ "$VENDOR_DIR" = "$PROJECT_DIR" ] || [ "$VENDOR_DIR" = / ] || { [ "$SOURCE_TYPE" != local ] && [[ "$VENDOR_DIR" == /* ]]; }; then
+  echo_error "Composer config.vendor-dir must point to a dependency directory within the project for remote sources."
+  exit 2
+fi
 ROOT_PHP_CONSTRAINT=""
 if [ -f composer.json ]; then
   ROOT_PHP_CONSTRAINT=$(jq -r '.require.php // ""' composer.json)
@@ -877,8 +899,8 @@ if [ "$SOURCE_TYPE" = "local" ] && [ -n "$CHECK_DEPS" ]; then
   load_local_dependencies || exit 2
   echo_info "Using installed local dependencies; no dependencies will be installed or updated."
 fi
-if [ -n "$CHECK_DEPS" ] && { [ "$SOURCE_TYPE" != "local" ] || [ -d vendor ]; } && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " vendor " ]]; then
-  SCAN_DIRS+=("vendor")
+if [ -n "$CHECK_DEPS" ] && { [ "$SOURCE_TYPE" != "local" ] || [ -d "$VENDOR_DIR" ]; } && [[ ! " ${SCAN_DIRS[*]} " =~ " . " ]] && [[ ! " ${SCAN_DIRS[*]} " =~ " $VENDOR_DIR " ]]; then
+  SCAN_DIRS+=("$VENDOR_DIR")
 fi
 
 PHPCS_STANDARDS="PHPCompatibility"
